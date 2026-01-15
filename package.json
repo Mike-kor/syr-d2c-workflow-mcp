@@ -1,0 +1,48 @@
+{
+  "name": "syr-d2c-workflow-mcp",
+  "version": "0.1.0",
+  "description": "Design-to-Code workflow MCP - Transform Figma designs into production-ready components with rules validation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "syr-d2c-workflow-mcp": "dist/index.js",
+    "syr-d2c": "dist/index.js",
+    "d2cmcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "figma",
+    "design-to-code",
+    "d2c",
+    "syr",
+    "workflow",
+    "components",
+    "react",
+    "claude",
+    "cursor"
+  ],
+  "author": "syr",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syr/syr-d2c-workflow-mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "glob": "^11.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
