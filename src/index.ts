@@ -119,7 +119,7 @@ const DEFAULT_RULES = `
 const server = new Server(
   {
     name: "syr-d2c-workflow-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
   },
   {
     capabilities: {
@@ -221,7 +221,7 @@ ${SERVICE_IDENTIFIERS}
         description: `Figma 디자인 스크린샷과 렌더링 결과를 비교 분석합니다.
 ${SERVICE_IDENTIFIERS}
 
-📊 **비교 항목**:
+📊 **비교 항목 (각 0-100점)**:
 - 레이아웃 일치도
 - 색상/타이포그래피 일치도
 - 간격/여백 일치도
@@ -230,7 +230,7 @@ ${SERVICE_IDENTIFIERS}
 💡 **사용법**:
 1. figma-mcp.get_screenshot으로 원본 이미지 획득
 2. playwright-mcp로 렌더링 결과 스크린샷
-3. 이 도구로 비교 분석`,
+3. 이 도구로 비교 분석 (scores 필수 입력)`,
         inputSchema: {
           type: "object",
           properties: {
@@ -247,8 +247,101 @@ ${SERVICE_IDENTIFIERS}
               items: { type: "string" },
               description: "발견된 차이점 목록",
             },
+            iteration: {
+              type: "number",
+              description: "현재 반복 횟수",
+            },
+            maxIterations: {
+              type: "number",
+              description: "최대 반복 횟수 (기본: 5)",
+            },
+            scores: {
+              type: "object",
+              properties: {
+                layout: { type: "number", description: "레이아웃 점수 (0-100)" },
+                colors: { type: "number", description: "색상 점수 (0-100)" },
+                typography: { type: "number", description: "타이포그래피 점수 (0-100)" },
+                spacing: { type: "number", description: "간격 점수 (0-100)" },
+              },
+              description: "항목별 점수 (0-100)",
+            },
           },
-          required: ["designDescription", "renderedDescription"],
+          required: ["designDescription", "renderedDescription", "scores"],
+        },
+      },
+
+      // log_step - 실시간 진행 로그
+      {
+        name: "d2c_log_step",
+        description: `워크플로우 진행 상황을 실시간으로 출력합니다.
+${SERVICE_IDENTIFIERS}
+
+📋 **각 단계 완료 시 호출하여 진행 상황을 사용자에게 알립니다.**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            step: {
+              type: "number",
+              description: "현재 단계 번호 (1-6)",
+            },
+            stepName: {
+              type: "string",
+              description: "단계 이름",
+            },
+            status: {
+              type: "string",
+              enum: ["start", "done", "error"],
+              description: "상태",
+            },
+            message: {
+              type: "string",
+              description: "추가 메시지",
+            },
+            iteration: {
+              type: "number",
+              description: "반복 중인 경우 현재 반복 횟수",
+            },
+          },
+          required: ["step", "stepName", "status"],
+        },
+      },
+
+      // iteration_check - 반복 제어
+      {
+        name: "d2c_iteration_check",
+        description: `반복 계속 여부를 판단합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **판단 기준**:
+- 70점 미만: 자동으로 계속 진행
+- 70점 이상: 사용자 확인 필요
+- 최대 반복 도달 또는 점수 하락: 중단 권장`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            currentScore: {
+              type: "number",
+              description: "현재 종합 점수 (0-100)",
+            },
+            targetScore: {
+              type: "number",
+              description: "목표 점수 (기본: 70)",
+            },
+            iteration: {
+              type: "number",
+              description: "현재 반복 횟수",
+            },
+            maxIterations: {
+              type: "number",
+              description: "최대 반복 횟수 (기본: 5)",
+            },
+            previousScores: {
+              type: "array",
+              items: { type: "number" },
+              description: "이전 반복의 점수들",
+            },
+          },
+          required: ["currentScore", "iteration"],
         },
       },
 
@@ -482,44 +575,144 @@ ${input.code.length} 문자`,
         };
       }
 
+      case "d2c_log_step": {
+        const input = z
+          .object({
+            step: z.number(),
+            stepName: z.string(),
+            status: z.enum(["start", "done", "error"]),
+            message: z.string().optional(),
+            iteration: z.number().optional(),
+          })
+          .parse(args);
+
+        const statusIcon = input.status === "start" ? "🚀" : input.status === "done" ? "✅" : "❌";
+        const iterationText = input.iteration ? ` (반복 ${input.iteration})` : "";
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${statusIcon} [${input.step}/6] ${input.stepName}${iterationText}
+${input.message ? `   → ${input.message}` : ""}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            },
+          ],
+        };
+      }
+
+      case "d2c_iteration_check": {
+        const input = z
+          .object({
+            currentScore: z.number(),
+            targetScore: z.number().optional().default(70),
+            iteration: z.number(),
+            maxIterations: z.number().optional().default(5),
+            previousScores: z.array(z.number()).optional(),
+          })
+          .parse(args);
+
+        const { currentScore, targetScore, iteration, maxIterations, previousScores } = input;
+
+        // 점수 변화 계산
+        const lastScore = previousScores?.length ? previousScores[previousScores.length - 1] : null;
+        const scoreDiff = lastScore !== null ? currentScore - lastScore : null;
+        const isImproving = scoreDiff === null || scoreDiff >= 0;
+
+        // 판단 로직
+        let recommendation: "continue" | "user_confirm" | "stop";
+        let reason: string;
+
+        if (iteration >= maxIterations) {
+          recommendation = "stop";
+          reason = `최대 반복 횟수(${maxIterations}회) 도달`;
+        } else if (!isImproving && scoreDiff !== null && scoreDiff < -10) {
+          recommendation = "stop";
+          reason = `점수 하락 감지 (${scoreDiff}점)`;
+        } else if (currentScore >= targetScore) {
+          recommendation = "user_confirm";
+          reason = `목표 점수(${targetScore}점) 달성! 사용자 확인 필요`;
+        } else {
+          recommendation = "continue";
+          reason = `목표 점수(${targetScore}점) 미달, 자동 계속`;
+        }
+
+        const statusEmoji = recommendation === "continue" ? "🔄" : recommendation === "user_confirm" ? "✋" : "🛑";
+        const diffText = scoreDiff !== null ? ` (${scoreDiff >= 0 ? "+" : ""}${scoreDiff})` : "";
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${statusEmoji} **반복 ${iteration}/${maxIterations} 판단 결과**
+
+📊 현재 점수: **${currentScore}점**${diffText}
+🎯 목표 점수: ${targetScore}점
+
+**권장**: ${recommendation === "continue" ? "계속 진행" : recommendation === "user_confirm" ? "사용자 확인" : "중단"}
+**이유**: ${reason}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            },
+          ],
+        };
+      }
+
       case "d2c_compare_with_design": {
         const input = z
           .object({
             designDescription: z.string(),
             renderedDescription: z.string(),
             differences: z.array(z.string()).optional(),
+            iteration: z.number().optional(),
+            maxIterations: z.number().optional().default(5),
+            scores: z.object({
+              layout: z.number(),
+              colors: z.number(),
+              typography: z.number(),
+              spacing: z.number(),
+            }),
           })
           .parse(args);
+
+        const { scores, iteration, maxIterations } = input;
+        const avgScore = Math.round((scores.layout + scores.colors + scores.typography + scores.spacing) / 4);
+
+        // 점수 바 생성 함수
+        const scoreBar = (score: number) => {
+          const filled = Math.round(score / 10);
+          return "█".repeat(filled) + "░".repeat(10 - filled);
+        };
+
+        const checkMark = (score: number) => score >= 70 ? "✓" : "✗";
+        const iterationHeader = iteration ? `반복 ${iteration}/${maxIterations}` : "";
 
         return {
           content: [
             {
               type: "text",
-              text: `📊 **디자인 vs 렌더링 비교 분석**
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **디자인 비교 결과** ${iterationHeader}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-## 원본 디자인
-${input.designDescription}
+┌────────────┬────────────┬──────┬──────┐
+│ 항목       │ 점수바     │ 점수 │ 상태 │
+├────────────┼────────────┼──────┼──────┤
+│ 레이아웃   │ ${scoreBar(scores.layout)} │ ${String(scores.layout).padStart(3)}  │  ${checkMark(scores.layout)}   │
+│ 색상       │ ${scoreBar(scores.colors)} │ ${String(scores.colors).padStart(3)}  │  ${checkMark(scores.colors)}   │
+│ 타이포     │ ${scoreBar(scores.typography)} │ ${String(scores.typography).padStart(3)}  │  ${checkMark(scores.typography)}   │
+│ 간격       │ ${scoreBar(scores.spacing)} │ ${String(scores.spacing).padStart(3)}  │  ${checkMark(scores.spacing)}   │
+├────────────┼────────────┼──────┼──────┤
+│ **종합**   │ ${scoreBar(avgScore)} │ **${String(avgScore).padStart(3)}** │  ${checkMark(avgScore)}   │
+└────────────┴────────────┴──────┴──────┘
 
-## 렌더링 결과
-${input.renderedDescription}
-
+${input.differences?.length ? `
 ## 발견된 차이점
-${input.differences?.length ? input.differences.map((d) => `- ${d}`).join("\n") : "- 차이점이 명시되지 않음"}
-
-## 권장 액션
-${
-  input.differences?.length
-    ? `
-1. 위 차이점들을 검토하세요
-2. 중요한 차이점부터 수정하세요
-3. 수정 후 다시 렌더링하여 비교하세요
-`
-    : `
-1. 시각적으로 두 결과를 비교하세요
-2. 레이아웃, 색상, 간격, 타이포그래피를 확인하세요
-3. 차이점이 있다면 differences 파라미터로 명시해주세요
-`
-}`,
+${input.differences.map((d) => `- ${d}`).join("\n")}
+` : ""}
+## 다음 단계
+→ \`d2c_iteration_check\` 호출하여 계속 여부 판단`,
             },
           ],
         };
@@ -716,45 +909,55 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 - 컴포넌트명: ${componentName}
 - 프레임워크: ${framework}
 
+### ⚠️ 중요: 매 단계마다 \`d2c_log_step\` 호출하여 진행 상황 출력!
+
 ### 워크플로우 단계
 
-**Step 0: 사전 검사 (필수)**
-1. \`d2c_preflight_check\` 호출
-2. figma-mcp 확인: \`get_design_context\` 호출 시도
-3. playwright-mcp 확인: \`browser_snapshot\` 호출 시도
-4. 누락된 MCP가 있으면 설치 가이드 안내 후 중단
+**Step 1: 사전 검사**
+1. \`d2c_log_step(step:1, stepName:"사전 검사", status:"start")\` 호출
+2. \`d2c_preflight_check\` 호출
+3. figma-mcp 확인: \`get_design_context\` 호출 시도
+4. playwright-mcp 확인: \`browser_snapshot\` 호출 시도
+5. \`d2c_log_step(step:1, stepName:"사전 검사", status:"done")\` 호출
 
-**Step 1: 규칙 수집**
-1. \`d2c_get_design_rules\` 호출
-2. 반환된 규칙을 숙지
+**Step 2: 규칙 수집**
+1. \`d2c_log_step(step:2, stepName:"규칙 수집", status:"start")\` 호출
+2. \`d2c_get_design_rules\` 호출
+3. \`d2c_log_step(step:2, stepName:"규칙 수집", status:"done")\` 호출
 
-**Step 2: Figma 디자인 가져오기**
-1. \`figma-mcp.get_design_context\` 호출 (URL 또는 선택된 노드)
-2. \`figma-mcp.get_screenshot\` 호출하여 원본 이미지 저장
+**Step 3: Figma 디자인 가져오기**
+1. \`d2c_log_step(step:3, stepName:"Figma 디자인 가져오기", status:"start")\` 호출
+2. \`figma-mcp.get_design_context\` 호출
 3. 디자인 구조, 색상, 타이포그래피, 간격 분석
+4. \`d2c_log_step(step:3, stepName:"Figma 디자인 가져오기", status:"done")\` 호출
 
-**Step 3: 컴포넌트 생성**
-1. \`d2c_get_component_template\`로 보일러플레이트 생성
-2. Figma 디자인 정보를 기반으로 템플릿 수정
-3. 규칙에 맞게 스타일, 접근성 속성 추가
+**Step 4: 컴포넌트 생성 및 반복 개선** (핵심!)
+1. \`d2c_log_step(step:4, stepName:"컴포넌트 생성", status:"start", iteration:1)\` 호출
+2. \`d2c_get_component_template\`로 보일러플레이트 생성
+3. Figma 디자인 정보를 기반으로 코드 작성
+4. \`d2c_validate_component\`로 검증
+5. \`playwright-mcp.browser_navigate\`로 페이지 열기
+6. \`playwright-mcp.browser_snapshot\`으로 스크린샷
+7. **\`d2c_compare_with_design\`** 호출 (scores 필수 입력!)
+   - layout, colors, typography, spacing 각각 0-100점 평가
+8. **\`d2c_iteration_check\`** 호출하여 계속 여부 판단
+   - 70점 미만: 자동으로 수정 후 반복
+   - 70점 이상: 사용자에게 확인 요청
+   - 최대 5회 반복
+9. \`d2c_log_step(step:4, stepName:"컴포넌트 생성", status:"done", iteration:N)\` 호출
 
-**Step 4: 검증**
-1. \`d2c_validate_component\`로 코드 검증
-2. 이슈가 있으면 수정
-
-**Step 5: 렌더링 확인 (반복)**
-1. 생성된 컴포넌트를 프로젝트에 추가
-2. \`playwright-mcp.browser_navigate\`로 페이지 열기
-3. \`playwright-mcp.browser_snapshot\`으로 스크린샷
-4. \`d2c_compare_with_design\`으로 원본과 비교
-5. 차이점이 있으면 수정 후 Step 5 반복
+**Step 5: 최종 검증**
+1. \`d2c_log_step(step:5, stepName:"최종 검증", status:"start")\` 호출
+2. \`d2c_validate_component\`로 최종 검증
+3. \`d2c_log_step(step:5, stepName:"최종 검증", status:"done")\` 호출
 
 **Step 6: 완료**
-1. 최종 코드와 파일 경로 보고
-2. 수정 이력 요약
+1. \`d2c_log_step(step:6, stepName:"완료", status:"done")\` 호출
+2. 최종 코드와 파일 경로 보고
+3. 반복 히스토리 요약 (점수 변화)
 
 ---
-위 워크플로우대로 진행해주세요.`,
+위 워크플로우대로 진행해주세요. **매 단계마다 d2c_log_step 호출 필수!**`,
           },
         },
       ],

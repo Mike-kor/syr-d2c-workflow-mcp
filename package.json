@@ -1,6 +1,6 @@
 {
   "name": "syr-d2c-workflow-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Design-to-Code workflow MCP - Transform Figma designs into production-ready components with rules validation",
   "type": "module",
   "main": "dist/index.js",
