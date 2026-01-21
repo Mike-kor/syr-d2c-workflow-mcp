@@ -115,14 +115,16 @@ AI가 다음 키워드를 감지하면 이 MCP를 사용합니다:
 }
 ```
 
-### `d2c_compare_with_design`
-Figma 디자인과 렌더링 결과를 비교 분석합니다.
+### `d2c_log_step`
+워크플로우 진행 상황을 실시간으로 출력합니다.
 
 ```typescript
 {
-  designDescription: string;     // 원본 디자인 설명
-  renderedDescription: string;   // 렌더링 결과 설명
-  differences?: string[];        // 발견된 차이점
+  step: number;        // 현재 단계 번호 (1-6)
+  stepName: string;    // 단계 이름
+  status: "start" | "done" | "error";
+  message?: string;    // 추가 메시지
+  iteration?: number;  // 반복 횟수
 }
 ```
 
@@ -287,6 +289,207 @@ sequenceDiagram
 - **[N]** 완료 - 현재 상태로 다음 단계 진행
 - **[M]** 수동 수정 - 사용자가 직접 코드 수정 후 재비교
 - **[S]** 중단 - 워크플로우 종료
+
+## OpenSpec 규칙 통합
+
+v0.4.0부터 사용자 프로젝트의 OpenSpec 규칙을 자동으로 탐지하고 워크플로우에 적용합니다.
+
+### OpenSpec 규칙 구조
+
+```
+your-project/
+├── openspec/
+│   └── specs/
+│       ├── figma-standard/     ← Figma 변환 규칙
+│       │   └── spec.md
+│       ├── design-rules/       ← 디자인 규칙
+│       │   └── spec.md
+│       └── custom-rules/       ← 커스텀 규칙
+│           └── spec.md
+└── src/
+```
+
+### 탐지 경로
+
+다음 경로에서 OpenSpec 규칙을 자동으로 탐지합니다:
+
+1. `./openspec/specs/*/spec.md`
+2. `./.cursor/openspec/specs/*/spec.md`
+3. `./docs/openspec/specs/*/spec.md`
+
+### OpenSpec 도구
+
+#### `d2c_load_openspec_rules`
+프로젝트의 OpenSpec 규칙을 탐지하고 로드합니다.
+
+```typescript
+{
+  forceReload?: boolean;     // 캐시 무시하고 다시 로드
+  specNames?: string[];      // 특정 spec만 필터링
+}
+```
+
+**반환값 예시:**
+```
+📋 OpenSpec 규칙 로드 결과
+
+## 발견된 규칙 (2개)
+
+### figma-standard
+- 경로: `openspec/specs/figma-standard/spec.md`
+- Requirements (3개):
+    - 컴포넌트 네이밍 규칙 (2개 시나리오)
+    - Props 인터페이스 정의 (1개 시나리오)
+    - 접근성 속성 (2개 시나리오)
+
+### design-rules
+- 경로: `openspec/specs/design-rules/spec.md`
+- Requirements (2개):
+    - 색상 시스템 (1개 시나리오)
+    - 타이포그래피 (1개 시나리오)
+```
+
+#### `d2c_get_workflow_tasks`
+현재 Phase에 맞는 체크리스트를 반환합니다.
+
+```typescript
+{
+  phase: 1 | 2 | 3;           // 현재 Phase
+  completedTasks?: string[];  // 완료된 task ID 목록
+  includeRules?: boolean;     // 적용 규칙 목록 포함
+}
+```
+
+**반환값 예시:**
+```markdown
+## Phase 1: Figma MCP 추출 (목표 60%)
+
+### 진행률: 33% (2/6)
+███░░░░░░░
+
+### Tasks
+- [x] 1.1 Figma 디자인 컨텍스트 가져오기
+- [x] 1.2 Figma MCP로 코드 추출
+- [ ] 1.3 Playwright 렌더링
+- [ ] 1.4 스크린샷 비교 (toHaveScreenshot)
+- [ ] 1.5 d2c_phase1_compare 호출
+- [ ] 1.6 HITL 확인
+
+### 적용 규칙
+- **figma-standard**: 컴포넌트 네이밍 규칙, Props 인터페이스 정의, 접근성 속성
+- **design-rules**: 색상 시스템, 타이포그래피
+```
+
+#### `d2c_validate_against_spec`
+생성된 코드가 OpenSpec 규칙을 준수하는지 검증합니다.
+
+```typescript
+{
+  code: string;           // 검증할 코드
+  specName?: string;      // 특정 spec만 검증
+  componentName?: string; // 컴포넌트 이름
+}
+```
+
+**반환값 예시:**
+```
+📋 OpenSpec 규칙 검증 결과
+
+## 요약
+- 통과: 3개 ✅
+- 실패: 1개 ❌
+- 경고: 1개 ⚠️
+- 준수율: 60%
+
+██████░░░░ 60%
+
+## 상세 결과
+
+✅ **컴포넌트 네이밍 규칙** (default)
+   ButtonPrimary은(는) PascalCase 준수
+
+✅ **Props 인터페이스 정의** (default)
+   TypeScript Props 인터페이스 정의됨
+
+❌ **색상 시스템** (design-rules)
+   검증 필요: 디자인 시스템 색상 사용
+
+## 수정 필요 항목
+- 색상 시스템: 디자인 시스템 색상 사용
+```
+
+### OpenSpec 워크플로우 통합 다이어그램
+
+```mermaid
+flowchart TD
+    Start[워크플로우 시작] --> LoadRules[d2c_load_openspec_rules]
+    LoadRules --> CheckRules{규칙 발견?}
+    
+    CheckRules -->|Yes| ApplyRules[규칙 적용]
+    CheckRules -->|No| DefaultRules[기본 규칙 사용]
+    
+    ApplyRules --> Phase1
+    DefaultRules --> Phase1
+    
+    subgraph Phase1 [Phase 1]
+        P1_Tasks[d2c_get_workflow_tasks - phase:1]
+        P1_Work[Figma MCP 추출]
+        P1_Validate[d2c_validate_against_spec]
+        P1_Compare[d2c_phase1_compare]
+        
+        P1_Tasks --> P1_Work --> P1_Validate --> P1_Compare
+    end
+    
+    subgraph Phase2 [Phase 2]
+        P2_Tasks[d2c_get_workflow_tasks - phase:2]
+        P2_Work[LLM 이미지 Diff 수정]
+        P2_Validate[d2c_validate_against_spec]
+        P2_Compare[d2c_phase2_image_diff]
+        
+        P2_Tasks --> P2_Work --> P2_Validate --> P2_Compare
+    end
+    
+    subgraph Phase3 [Phase 3]
+        P3_Tasks[d2c_get_workflow_tasks - phase:3]
+        P3_Work[LLM DOM 비교 수정]
+        P3_Validate[d2c_validate_against_spec - 최종]
+        P3_Compare[d2c_phase3_dom_compare]
+        
+        P3_Tasks --> P3_Work --> P3_Validate --> P3_Compare
+    end
+    
+    Phase1 --> Phase2 --> Phase3 --> Done[완료]
+```
+
+### OpenSpec 규칙 예시
+
+`openspec/specs/figma-standard/spec.md`:
+
+```markdown
+# Capability: Figma 변환 표준
+
+## ADDED Requirements
+
+### Requirement: 컴포넌트 네이밍 규칙
+
+컴포넌트 이름은 PascalCase를 따라야 합니다(SHALL).
+
+#### Scenario: PascalCase 검증
+
+- **GIVEN** Figma에서 추출한 컴포넌트가 있을 때
+- **WHEN** 컴포넌트 이름을 생성하면
+- **THEN** PascalCase 형식이어야 한다 (예: ButtonPrimary)
+
+### Requirement: Props 인터페이스 정의
+
+모든 컴포넌트는 TypeScript Props 인터페이스를 정의해야 합니다(SHALL).
+
+#### Scenario: Props 인터페이스 존재
+
+- **GIVEN** React 컴포넌트가 생성될 때
+- **WHEN** Props를 받는 경우
+- **THEN** interface ComponentNameProps {} 형태로 정의한다
+```
 
 ### Phase별 도구
 

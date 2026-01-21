@@ -19,6 +19,157 @@ import * as path from "path";
 const RULES_PATHS = process.env.RULES_PATHS?.split(",").map((p) => p.trim()) || [];
 const RULES_GLOB = process.env.RULES_GLOB || "";
 const CONFIG_PATH = process.env.D2C_CONFIG_PATH || "";
+const PROJECT_ROOT = process.env.D2C_PROJECT_ROOT || process.cwd();
+
+// OpenSpec 규칙 탐지 경로
+const OPENSPEC_SEARCH_PATHS = [
+  "openspec/specs/*/spec.md",
+  ".cursor/openspec/specs/*/spec.md",
+  "docs/openspec/specs/*/spec.md",
+];
+
+// OpenSpec 규칙 파싱 결과 타입
+interface OpenSpecRequirement {
+  name: string;
+  description: string;
+  scenarios: Array<{
+    name: string;
+    given: string;
+    when: string;
+    then: string;
+  }>;
+}
+
+interface OpenSpecRule {
+  specName: string;
+  filePath: string;
+  requirements: OpenSpecRequirement[];
+}
+
+// OpenSpec 규칙 캐시
+let cachedOpenSpecRules: OpenSpecRule[] | null = null;
+
+// OpenSpec spec.md 파싱
+async function parseOpenSpecFile(filePath: string): Promise<OpenSpecRule | null> {
+  try {
+    const content = await fs.readFile(filePath, "utf-8");
+    const specName = path.basename(path.dirname(filePath));
+    
+    const requirements: OpenSpecRequirement[] = [];
+    
+    // Requirement 섹션 파싱
+    const reqRegex = /### Requirement: (.+?)\n\n([\s\S]*?)(?=### Requirement:|---|\n## |$)/g;
+    let reqMatch;
+    
+    while ((reqMatch = reqRegex.exec(content)) !== null) {
+      const reqName = reqMatch[1].trim();
+      const reqContent = reqMatch[2];
+      
+      // Scenario 파싱
+      const scenarios: OpenSpecRequirement["scenarios"] = [];
+      const scenarioRegex = /#### Scenario: (.+?)\n\n([\s\S]*?)(?=#### Scenario:|### Requirement:|---|\n## |$)/g;
+      let scenarioMatch;
+      
+      while ((scenarioMatch = scenarioRegex.exec(reqContent)) !== null) {
+        const scenarioName = scenarioMatch[1].trim();
+        const scenarioContent = scenarioMatch[2];
+        
+        const givenMatch = scenarioContent.match(/- \*\*GIVEN\*\* (.+)/);
+        const whenMatch = scenarioContent.match(/- \*\*WHEN\*\* (.+)/);
+        const thenMatch = scenarioContent.match(/- \*\*THEN\*\* (.+)/);
+        
+        scenarios.push({
+          name: scenarioName,
+          given: givenMatch?.[1] || "",
+          when: whenMatch?.[1] || "",
+          then: thenMatch?.[1] || "",
+        });
+      }
+      
+      // 설명 추출 (첫 번째 문단)
+      const descMatch = reqContent.match(/^(.+?)(?:\n\n|$)/);
+      
+      requirements.push({
+        name: reqName,
+        description: descMatch?.[1]?.trim() || "",
+        scenarios,
+      });
+    }
+    
+    return {
+      specName,
+      filePath,
+      requirements,
+    };
+  } catch (e) {
+    console.error(`Failed to parse OpenSpec file: ${filePath}`, e);
+    return null;
+  }
+}
+
+// OpenSpec 규칙 탐지 및 로드
+async function loadOpenSpecRules(forceReload = false): Promise<OpenSpecRule[]> {
+  if (cachedOpenSpecRules && !forceReload) {
+    return cachedOpenSpecRules;
+  }
+  
+  const rules: OpenSpecRule[] = [];
+  
+  for (const searchPath of OPENSPEC_SEARCH_PATHS) {
+    const fullPattern = path.join(PROJECT_ROOT, searchPath);
+    const files = await glob(fullPattern);
+    
+    for (const file of files) {
+      const rule = await parseOpenSpecFile(file);
+      if (rule) {
+        rules.push(rule);
+      }
+    }
+  }
+  
+  cachedOpenSpecRules = rules;
+  return rules;
+}
+
+// Phase별 Tasks 정의
+const PHASE_TASKS = {
+  1: {
+    name: "Phase 1: Figma MCP 추출",
+    target: 60,
+    tasks: [
+      { id: "1.1", content: "Figma 디자인 컨텍스트 가져오기" },
+      { id: "1.2", content: "Figma MCP로 코드 추출" },
+      { id: "1.3", content: "Playwright 렌더링" },
+      { id: "1.4", content: "스크린샷 비교 (toHaveScreenshot)" },
+      { id: "1.5", content: "d2c_phase1_compare 호출" },
+      { id: "1.6", content: "HITL 확인" },
+    ],
+  },
+  2: {
+    name: "Phase 2: LLM 이미지 Diff",
+    target: 70,
+    tasks: [
+      { id: "2.1", content: "Playwright 이미지 diff 분석" },
+      { id: "2.2", content: "diff 영역 식별" },
+      { id: "2.3", content: "LLM이 코드 수정" },
+      { id: "2.4", content: "렌더링 후 스크린샷 비교" },
+      { id: "2.5", content: "d2c_phase2_image_diff 호출" },
+      { id: "2.6", content: "HITL 확인" },
+    ],
+  },
+  3: {
+    name: "Phase 3: LLM DOM 비교",
+    target: 90,
+    tasks: [
+      { id: "3.1", content: "Playwright DOM 스냅샷 추출" },
+      { id: "3.2", content: "DOM 구조 비교" },
+      { id: "3.3", content: "LLM이 DOM 기반 수정" },
+      { id: "3.4", content: "렌더링 후 DOM 비교" },
+      { id: "3.5", content: "d2c_phase3_dom_compare 호출" },
+      { id: "3.6", content: "HITL 확인" },
+    ],
+  },
+};
 
 // 서비스 식별자 - AI가 이 키워드를 감지하면 이 MCP를 사용
 const SERVICE_IDENTIFIERS = `
@@ -119,7 +270,7 @@ const DEFAULT_RULES = `
 const server = new Server(
   {
     name: "syr-d2c-workflow-mcp",
-    version: "0.3.1",
+    version: "0.4.0",
   },
   {
     capabilities: {
@@ -443,6 +594,101 @@ ${SERVICE_IDENTIFIERS}
             },
           },
           required: ["currentPhase"],
+        },
+      },
+
+      // ============ OpenSpec 통합 도구들 ============
+
+      // OpenSpec 규칙 로드
+      {
+        name: "d2c_load_openspec_rules",
+        description: `사용자 프로젝트의 OpenSpec 규칙을 자동으로 탐지하고 로드합니다.
+${SERVICE_IDENTIFIERS}
+
+📋 **탐지 경로**:
+- ./openspec/specs/*/spec.md
+- ./.cursor/openspec/specs/*/spec.md
+- ./docs/openspec/specs/*/spec.md
+
+🔍 **반환 정보**:
+- 발견된 spec 이름 및 경로
+- 각 spec의 Requirements 목록
+- 각 Requirement의 Scenarios`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            forceReload: {
+              type: "boolean",
+              description: "캐시 무시하고 다시 로드 (기본: false)",
+            },
+            specNames: {
+              type: "array",
+              items: { type: "string" },
+              description: "특정 spec만 필터링 (예: ['figma-standard', 'design-rules'])",
+            },
+          },
+        },
+      },
+
+      // 워크플로우 Tasks 체크리스트
+      {
+        name: "d2c_get_workflow_tasks",
+        description: `현재 Phase에 맞는 tasks.md 형식 체크리스트를 반환합니다.
+${SERVICE_IDENTIFIERS}
+
+📋 **체크리스트 포함 내용**:
+- Phase 이름 및 목표 성공률
+- 세부 Task 목록 (완료 상태 표시)
+- 적용될 OpenSpec 규칙 목록`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            phase: {
+              type: "number",
+              enum: [1, 2, 3],
+              description: "현재 Phase (1, 2, 3)",
+            },
+            completedTasks: {
+              type: "array",
+              items: { type: "string" },
+              description: "완료된 task ID 목록 (예: ['1.1', '1.2'])",
+            },
+            includeRules: {
+              type: "boolean",
+              description: "적용 규칙 목록 포함 (기본: true)",
+            },
+          },
+          required: ["phase"],
+        },
+      },
+
+      // OpenSpec 규칙 기반 검증
+      {
+        name: "d2c_validate_against_spec",
+        description: `생성된 코드가 OpenSpec 규칙을 준수하는지 검증합니다.
+${SERVICE_IDENTIFIERS}
+
+🔍 **검증 내용**:
+- 각 Requirement별 pass/fail/warn 상태
+- 위반 시 구체적인 메시지
+- 수정 가이드 제공`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            code: {
+              type: "string",
+              description: "검증할 코드",
+            },
+            specName: {
+              type: "string",
+              description: "검증에 사용할 spec 이름 (없으면 모든 spec 적용)",
+            },
+            componentName: {
+              type: "string",
+              description: "컴포넌트 이름",
+            },
+          },
+          required: ["code"],
         },
       },
 
@@ -1021,6 +1267,315 @@ ${input.currentPhase === 1 ? "    ↑ 현재" : input.currentPhase === 2 ? "    
         };
       }
 
+      // ============ OpenSpec 통합 핸들러 ============
+
+      case "d2c_load_openspec_rules": {
+        const input = z
+          .object({
+            forceReload: z.boolean().optional().default(false),
+            specNames: z.array(z.string()).optional(),
+          })
+          .parse(args);
+
+        const rules = await loadOpenSpecRules(input.forceReload);
+        
+        let filteredRules = rules;
+        if (input.specNames?.length) {
+          filteredRules = rules.filter(r => input.specNames!.includes(r.specName));
+        }
+
+        if (filteredRules.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `📋 **OpenSpec 규칙 로드 결과**
+
+## 발견된 규칙
+없음
+
+## 탐지 경로
+${OPENSPEC_SEARCH_PATHS.map(p => `- ${path.join(PROJECT_ROOT, p)}`).join("\n")}
+
+## 대안
+- 환경변수 RULES_PATHS로 규칙 파일 지정
+- \`d2c_get_design_rules\`로 기본 규칙 사용
+
+💡 프로젝트에 OpenSpec 규칙을 추가하려면:
+\`\`\`
+mkdir -p openspec/specs/figma-standard
+touch openspec/specs/figma-standard/spec.md
+\`\`\``,
+              },
+            ],
+          };
+        }
+
+        const rulesText = filteredRules.map(rule => {
+          const reqList = rule.requirements.map(req => {
+            const scenarioCount = req.scenarios.length;
+            return `    - ${req.name} (${scenarioCount}개 시나리오)`;
+          }).join("\n");
+          
+          return `### ${rule.specName}
+- 경로: \`${rule.filePath}\`
+- Requirements (${rule.requirements.length}개):
+${reqList}`;
+        }).join("\n\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📋 **OpenSpec 규칙 로드 결과**
+
+## 발견된 규칙 (${filteredRules.length}개)
+
+${rulesText}
+
+## 사용법
+1. \`d2c_get_workflow_tasks\`로 체크리스트에서 규칙 확인
+2. \`d2c_validate_against_spec\`로 코드 검증
+3. 각 Phase에서 규칙 준수 여부 자동 확인`,
+            },
+          ],
+        };
+      }
+
+      case "d2c_get_workflow_tasks": {
+        const input = z
+          .object({
+            phase: z.number(),
+            completedTasks: z.array(z.string()).optional().default([]),
+            includeRules: z.boolean().optional().default(true),
+          })
+          .parse(args);
+
+        const phaseInfo = PHASE_TASKS[input.phase as 1 | 2 | 3];
+        if (!phaseInfo) {
+          throw new Error(`Invalid phase: ${input.phase}. Must be 1, 2, or 3.`);
+        }
+
+        // 체크리스트 생성
+        const taskList = phaseInfo.tasks.map(task => {
+          const isCompleted = input.completedTasks.includes(task.id);
+          return `- [${isCompleted ? "x" : " "}] ${task.id} ${task.content}`;
+        }).join("\n");
+
+        // 완료율 계산
+        const completedCount = phaseInfo.tasks.filter(t => input.completedTasks.includes(t.id)).length;
+        const totalCount = phaseInfo.tasks.length;
+        const progressPercent = Math.round((completedCount / totalCount) * 100);
+
+        // OpenSpec 규칙 섹션
+        let rulesSection = "";
+        if (input.includeRules) {
+          const rules = await loadOpenSpecRules();
+          if (rules.length > 0) {
+            const rulesList = rules.map(rule => {
+              const keyReqs = rule.requirements.slice(0, 3).map(r => r.name).join(", ");
+              return `- **${rule.specName}**: ${keyReqs}${rule.requirements.length > 3 ? " 외 " + (rule.requirements.length - 3) + "개" : ""}`;
+            }).join("\n");
+            
+            rulesSection = `\n### 적용 규칙\n${rulesList}\n`;
+          } else {
+            rulesSection = `\n### 적용 규칙\n- (없음) 기본 규칙 사용\n`;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `## ${phaseInfo.name} (목표 ${phaseInfo.target}%)
+
+### 진행률: ${progressPercent}% (${completedCount}/${totalCount})
+${"█".repeat(Math.round(progressPercent / 10))}${"░".repeat(10 - Math.round(progressPercent / 10))}
+
+### Tasks
+${taskList}
+${rulesSection}
+### 다음 단계
+${completedCount === totalCount 
+  ? `✅ Phase ${input.phase} 완료! ${input.phase < 3 ? `Phase ${input.phase + 1}로 진행하세요.` : "워크플로우 완료!"}`
+  : `➡️ ${phaseInfo.tasks.find(t => !input.completedTasks.includes(t.id))?.id} ${phaseInfo.tasks.find(t => !input.completedTasks.includes(t.id))?.content} 진행`
+}`,
+            },
+          ],
+        };
+      }
+
+      case "d2c_validate_against_spec": {
+        const input = z
+          .object({
+            code: z.string(),
+            specName: z.string().optional(),
+            componentName: z.string().optional(),
+          })
+          .parse(args);
+
+        const rules = await loadOpenSpecRules();
+        
+        let targetRules = rules;
+        if (input.specName) {
+          targetRules = rules.filter(r => r.specName === input.specName);
+        }
+
+        interface ValidationResult {
+          specName: string;
+          requirement: string;
+          status: "pass" | "fail" | "warn";
+          message: string;
+        }
+
+        const results: ValidationResult[] = [];
+
+        // 기본 검증 규칙 (항상 적용)
+        const code = input.code;
+        const componentName = input.componentName || "Component";
+
+        // 1. PascalCase 컴포넌트 네이밍
+        if (componentName && /^[A-Z][a-zA-Z0-9]*$/.test(componentName)) {
+          results.push({
+            specName: "default",
+            requirement: "컴포넌트 네이밍 규칙",
+            status: "pass",
+            message: `${componentName}은(는) PascalCase 준수`,
+          });
+        } else if (componentName) {
+          results.push({
+            specName: "default",
+            requirement: "컴포넌트 네이밍 규칙",
+            status: "fail",
+            message: `${componentName}은(는) PascalCase가 아님. 권장: ${componentName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join("")}`,
+          });
+        }
+
+        // 2. Props 인터페이스
+        if (code.includes("interface") && code.includes("Props")) {
+          results.push({
+            specName: "default",
+            requirement: "Props 인터페이스 정의",
+            status: "pass",
+            message: "TypeScript Props 인터페이스 정의됨",
+          });
+        } else if (code.includes(": {") || code.includes("Props")) {
+          results.push({
+            specName: "default",
+            requirement: "Props 인터페이스 정의",
+            status: "warn",
+            message: "Props 타입이 있으나 명시적 인터페이스 권장",
+          });
+        } else {
+          results.push({
+            specName: "default",
+            requirement: "Props 인터페이스 정의",
+            status: "fail",
+            message: "Props 인터페이스가 없음. interface ComponentProps {} 추가 권장",
+          });
+        }
+
+        // 3. 접근성
+        const a11yPatterns = ["aria-", "role=", "tabIndex", "alt="];
+        const hasA11y = a11yPatterns.some(p => code.includes(p));
+        results.push({
+          specName: "default",
+          requirement: "접근성 속성",
+          status: hasA11y ? "pass" : "warn",
+          message: hasA11y ? "접근성 속성 포함됨" : "aria-*, role 속성 추가 권장",
+        });
+
+        // OpenSpec 규칙 기반 검증
+        for (const rule of targetRules) {
+          for (const req of rule.requirements) {
+            // 키워드 기반 간단한 검증
+            const keywords = req.name.toLowerCase().split(/\s+/);
+            
+            let matched = false;
+            let status: "pass" | "warn" = "warn";
+            
+            // 네이밍 관련
+            if (keywords.some(k => ["naming", "네이밍", "이름"].includes(k))) {
+              if (/^[A-Z][a-zA-Z0-9]*$/.test(componentName || "")) {
+                matched = true;
+                status = "pass";
+              }
+            }
+            
+            // Props 관련
+            if (keywords.some(k => ["props", "인터페이스", "interface"].includes(k))) {
+              if (code.includes("interface") && code.includes("Props")) {
+                matched = true;
+                status = "pass";
+              }
+            }
+            
+            // 접근성 관련
+            if (keywords.some(k => ["접근성", "a11y", "accessibility", "aria"].includes(k))) {
+              if (hasA11y) {
+                matched = true;
+                status = "pass";
+              }
+            }
+
+            if (!matched) {
+              results.push({
+                specName: rule.specName,
+                requirement: req.name,
+                status: "warn",
+                message: `검증 필요: ${req.description || req.name}`,
+              });
+            } else {
+              results.push({
+                specName: rule.specName,
+                requirement: req.name,
+                status,
+                message: status === "pass" ? "규칙 준수" : "검토 필요",
+              });
+            }
+          }
+        }
+
+        // 결과 집계
+        const passCount = results.filter(r => r.status === "pass").length;
+        const failCount = results.filter(r => r.status === "fail").length;
+        const warnCount = results.filter(r => r.status === "warn").length;
+        const totalCount = results.length;
+        const passRate = Math.round((passCount / totalCount) * 100);
+
+        const statusIcon = (s: string) => s === "pass" ? "✅" : s === "fail" ? "❌" : "⚠️";
+        
+        const resultText = results.map(r => 
+          `${statusIcon(r.status)} **${r.requirement}** (${r.specName})\n   ${r.message}`
+        ).join("\n\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 **OpenSpec 규칙 검증 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+- 통과: ${passCount}개 ✅
+- 실패: ${failCount}개 ❌
+- 경고: ${warnCount}개 ⚠️
+- **준수율: ${passRate}%**
+
+${"█".repeat(Math.round(passRate / 10))}${"░".repeat(10 - Math.round(passRate / 10))} ${passRate}%
+
+## 상세 결과
+
+${resultText}
+
+${failCount > 0 ? `\n## 수정 필요 항목\n${results.filter(r => r.status === "fail").map(r => `- ${r.requirement}: ${r.message}`).join("\n")}` : ""}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            },
+          ],
+        };
+      }
+
       case "d2c_get_component_template": {
         const input = z
           .object({
@@ -1221,6 +1776,13 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 
 ---
 
+### 🔰 Step 0: OpenSpec 규칙 로드
+1. **\`d2c_load_openspec_rules\`** 호출하여 프로젝트 규칙 확인
+2. 발견된 규칙(예: figma-standard, design-rules)을 워크플로우에 적용
+3. 규칙이 없으면 기본 규칙 사용
+
+---
+
 ### Step 1: 사전 검사
 1. \`d2c_log_step(step:1, stepName:"사전 검사", status:"start")\`
 2. \`d2c_preflight_check\` 호출
@@ -1236,46 +1798,52 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 ---
 
 ### 🔄 Phase 1: Figma MCP 추출 (목표 60%)
-1. \`d2c_log_step(step:3, stepName:"Phase 1", status:"start", iteration:1)\`
-2. \`d2c_get_component_template\`로 템플릿 생성
-3. **Figma MCP로 코드 추출/수정**
-4. \`playwright-mcp.browser_navigate\`로 렌더링
-5. \`playwright-mcp.browser_screenshot\`으로 스크린샷
-6. **Playwright toHaveScreenshot()으로 비교하여 성공률 계산**
-7. **\`d2c_phase1_compare\`** 호출 (successRate, iteration 필수!)
-8. **HITL 확인**: 사용자 응답에 따라:
-   - [Y] → 60% 미달이면 반복, 달성이면 Phase 2로
-   - [M] → 수동 수정 후 재비교
-   - [N] → 현재 상태로 다음 단계
-9. \`d2c_log_step(step:3, stepName:"Phase 1", status:"done")\`
+1. **\`d2c_get_workflow_tasks(phase:1)\`**로 체크리스트 확인
+2. \`d2c_log_step(step:3, stepName:"Phase 1", status:"start", iteration:1)\`
+3. \`d2c_get_component_template\`로 템플릿 생성
+4. **Figma MCP로 코드 추출/수정**
+5. \`playwright-mcp.browser_navigate\`로 렌더링
+6. \`playwright-mcp.browser_screenshot\`으로 스크린샷
+7. **Playwright toHaveScreenshot()으로 비교하여 성공률 계산**
+8. **\`d2c_phase1_compare\`** 호출 (successRate, iteration 필수!)
+9. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 검증
+10. **HITL 확인**: 사용자 응답에 따라:
+    - [Y] → 60% 미달이면 반복, 달성이면 Phase 2로
+    - [M] → 수동 수정 후 재비교
+    - [N] → 현재 상태로 다음 단계
+11. \`d2c_log_step(step:3, stepName:"Phase 1", status:"done")\`
 
 ---
 
 ### 🔄 Phase 2: LLM 이미지 Diff (목표 70%)
-1. \`d2c_log_step(step:4, stepName:"Phase 2", status:"start", iteration:1)\`
-2. **Playwright 이미지 diff 분석**
-3. diff 결과 기반으로 **LLM이 코드 수정**
-4. 렌더링 후 스크린샷 비교
-5. **\`d2c_phase2_image_diff\`** 호출 (successRate, diffAreas 포함!)
-6. **HITL 확인**: 사용자 응답에 따라:
+1. **\`d2c_get_workflow_tasks(phase:2)\`**로 체크리스트 확인
+2. \`d2c_log_step(step:4, stepName:"Phase 2", status:"start", iteration:1)\`
+3. **Playwright 이미지 diff 분석**
+4. diff 결과 기반으로 **LLM이 코드 수정**
+5. 렌더링 후 스크린샷 비교
+6. **\`d2c_phase2_image_diff\`** 호출 (successRate, diffAreas 포함!)
+7. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 검증
+8. **HITL 확인**: 사용자 응답에 따라:
    - [Y] → 70% 미달이면 LLM 수정 반복, 달성이면 Phase 3로
    - [M] → 수동 수정 후 재비교
    - [N] → 현재 상태로 다음 단계
-7. \`d2c_log_step(step:4, stepName:"Phase 2", status:"done")\`
+9. \`d2c_log_step(step:4, stepName:"Phase 2", status:"done")\`
 
 ---
 
 ### 🔄 Phase 3: LLM DOM 비교 (목표 90%)
-1. \`d2c_log_step(step:5, stepName:"Phase 3", status:"start", iteration:1)\`
-2. **Playwright DOM 스냅샷 비교**
-3. DOM 차이 기반으로 **LLM이 코드 수정**
-4. 렌더링 후 DOM 비교
-5. **\`d2c_phase3_dom_compare\`** 호출 (successRate, domDiffs 포함!)
-6. **HITL 확인**: 사용자 응답에 따라:
+1. **\`d2c_get_workflow_tasks(phase:3)\`**로 체크리스트 확인
+2. \`d2c_log_step(step:5, stepName:"Phase 3", status:"start", iteration:1)\`
+3. **Playwright DOM 스냅샷 비교**
+4. DOM 차이 기반으로 **LLM이 코드 수정**
+5. 렌더링 후 DOM 비교
+6. **\`d2c_phase3_dom_compare\`** 호출 (successRate, domDiffs 포함!)
+7. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 최종 검증
+8. **HITL 확인**: 사용자 응답에 따라:
    - [Y] → 90% 미달이면 LLM 수정 반복, 달성이면 완료
    - [M] → 수동 수정 후 재비교
    - [N] → 현재 상태로 완료
-7. \`d2c_log_step(step:5, stepName:"Phase 3", status:"done")\`
+9. \`d2c_log_step(step:5, stepName:"Phase 3", status:"done")\`
 
 ---
 
@@ -1288,10 +1856,22 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 ---
 
 **⚠️ 중요 규칙**:
+- **워크플로우 시작 시 \`d2c_load_openspec_rules\`로 규칙 로드**
+- **각 Phase에서 \`d2c_get_workflow_tasks\`로 체크리스트 확인**
+- **코드 수정 후 \`d2c_validate_against_spec\`로 규칙 검증**
 - 매 Phase마다 **반드시 HITL 확인** (사용자에게 계속 여부 질문)
 - 모든 Phase에서 사용자가 수동 수정 가능 ([M] 옵션)
 - 성공률은 Playwright 비교 결과를 기반으로 객관적으로 측정
-- \`d2c_workflow_status\`로 언제든 전체 진행 상황 확인 가능`,
+- \`d2c_workflow_status\`로 언제든 전체 진행 상황 확인 가능
+
+---
+
+### 📋 OpenSpec 도구 사용법
+| 도구 | 용도 | 호출 시점 |
+|------|------|----------|
+| \`d2c_load_openspec_rules\` | 프로젝트 규칙 로드 | 워크플로우 시작 시 |
+| \`d2c_get_workflow_tasks\` | Phase별 체크리스트 | 각 Phase 시작 시 |
+| \`d2c_validate_against_spec\` | 규칙 준수 검증 | 코드 수정 후 |`,
           },
         },
       ],
@@ -1371,9 +1951,10 @@ export default Component;
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("SYR D2C Workflow MCP server running on stdio (v0.1.0)");
+  console.error("SYR D2C Workflow MCP server running on stdio (v0.4.0)");
   console.error(`  Rules paths: ${RULES_PATHS.join(", ") || "(none)"}`);
   console.error(`  Rules glob: ${RULES_GLOB || "(none)"}`);
+  console.error(`  OpenSpec paths: ${OPENSPEC_SEARCH_PATHS.map(p => path.join(PROJECT_ROOT, p)).join(", ")}`);
 }
 
 main().catch((error) => {
