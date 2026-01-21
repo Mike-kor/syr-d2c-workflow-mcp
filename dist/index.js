@@ -104,7 +104,7 @@ const DEFAULT_RULES = `
 // MCP 서버 생성
 const server = new Server({
     name: "syr-d2c-workflow-mcp",
-    version: "0.3.0",
+    version: "0.3.1",
 }, {
     capabilities: {
         tools: {},
@@ -193,60 +193,6 @@ ${SERVICE_IDENTIFIERS}
                     required: ["code", "componentName"],
                 },
             },
-            // compare_with_design - 디자인 비교
-            {
-                name: "d2c_compare_with_design",
-                description: `Figma 디자인 스크린샷과 렌더링 결과를 비교 분석합니다.
-${SERVICE_IDENTIFIERS}
-
-📊 **비교 항목 (각 0-100점)**:
-- 레이아웃 일치도
-- 색상/타이포그래피 일치도
-- 간격/여백 일치도
-- 누락된 요소
-
-💡 **사용법**:
-1. figma-mcp.get_screenshot으로 원본 이미지 획득
-2. playwright-mcp로 렌더링 결과 스크린샷
-3. 이 도구로 비교 분석 (scores 필수 입력)`,
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        designDescription: {
-                            type: "string",
-                            description: "Figma 디자인 설명 (get_design_context 결과)",
-                        },
-                        renderedDescription: {
-                            type: "string",
-                            description: "렌더링된 결과 설명",
-                        },
-                        differences: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "발견된 차이점 목록",
-                        },
-                        iteration: {
-                            type: "number",
-                            description: "현재 반복 횟수",
-                        },
-                        maxIterations: {
-                            type: "number",
-                            description: "최대 반복 횟수 (기본: 5)",
-                        },
-                        scores: {
-                            type: "object",
-                            properties: {
-                                layout: { type: "number", description: "레이아웃 점수 (0-100)" },
-                                colors: { type: "number", description: "색상 점수 (0-100)" },
-                                typography: { type: "number", description: "타이포그래피 점수 (0-100)" },
-                                spacing: { type: "number", description: "간격 점수 (0-100)" },
-                            },
-                            description: "항목별 점수 (0-100)",
-                        },
-                    },
-                    required: ["designDescription", "renderedDescription", "scores"],
-                },
-            },
             // log_step - 실시간 진행 로그
             {
                 name: "d2c_log_step",
@@ -280,44 +226,6 @@ ${SERVICE_IDENTIFIERS}
                         },
                     },
                     required: ["step", "stepName", "status"],
-                },
-            },
-            // iteration_check - 반복 제어
-            {
-                name: "d2c_iteration_check",
-                description: `반복 계속 여부를 판단합니다.
-${SERVICE_IDENTIFIERS}
-
-📊 **판단 기준**:
-- 70점 미만: 자동으로 계속 진행
-- 70점 이상: 사용자 확인 필요
-- 최대 반복 도달 또는 점수 하락: 중단 권장`,
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        currentScore: {
-                            type: "number",
-                            description: "현재 종합 점수 (0-100)",
-                        },
-                        targetScore: {
-                            type: "number",
-                            description: "목표 점수 (기본: 70)",
-                        },
-                        iteration: {
-                            type: "number",
-                            description: "현재 반복 횟수",
-                        },
-                        maxIterations: {
-                            type: "number",
-                            description: "최대 반복 횟수 (기본: 5)",
-                        },
-                        previousScores: {
-                            type: "array",
-                            items: { type: "number" },
-                            description: "이전 반복의 점수들",
-                        },
-                    },
-                    required: ["currentScore", "iteration"],
                 },
             },
             // ============ 3단계 PHASE 도구들 ============
@@ -747,113 +655,6 @@ ${input.code.length} 문자`,
 ${statusIcon} [${input.step}/6] ${input.stepName}${iterationText}
 ${input.message ? `   → ${input.message}` : ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-                        },
-                    ],
-                };
-            }
-            case "d2c_iteration_check": {
-                const input = z
-                    .object({
-                    currentScore: z.number(),
-                    targetScore: z.number().optional().default(70),
-                    iteration: z.number(),
-                    maxIterations: z.number().optional().default(5),
-                    previousScores: z.array(z.number()).optional(),
-                })
-                    .parse(args);
-                const { currentScore, targetScore, iteration, maxIterations, previousScores } = input;
-                // 점수 변화 계산
-                const lastScore = previousScores?.length ? previousScores[previousScores.length - 1] : null;
-                const scoreDiff = lastScore !== null ? currentScore - lastScore : null;
-                const isImproving = scoreDiff === null || scoreDiff >= 0;
-                // 판단 로직
-                let recommendation;
-                let reason;
-                if (iteration >= maxIterations) {
-                    recommendation = "stop";
-                    reason = `최대 반복 횟수(${maxIterations}회) 도달`;
-                }
-                else if (!isImproving && scoreDiff !== null && scoreDiff < -10) {
-                    recommendation = "stop";
-                    reason = `점수 하락 감지 (${scoreDiff}점)`;
-                }
-                else if (currentScore >= targetScore) {
-                    recommendation = "user_confirm";
-                    reason = `목표 점수(${targetScore}점) 달성! 사용자 확인 필요`;
-                }
-                else {
-                    recommendation = "continue";
-                    reason = `목표 점수(${targetScore}점) 미달, 자동 계속`;
-                }
-                const statusEmoji = recommendation === "continue" ? "🔄" : recommendation === "user_confirm" ? "✋" : "🛑";
-                const diffText = scoreDiff !== null ? ` (${scoreDiff >= 0 ? "+" : ""}${scoreDiff})` : "";
-                return {
-                    content: [
-                        {
-                            type: "text",
-                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${statusEmoji} **반복 ${iteration}/${maxIterations} 판단 결과**
-
-📊 현재 점수: **${currentScore}점**${diffText}
-🎯 목표 점수: ${targetScore}점
-
-**권장**: ${recommendation === "continue" ? "계속 진행" : recommendation === "user_confirm" ? "사용자 확인" : "중단"}
-**이유**: ${reason}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-                        },
-                    ],
-                };
-            }
-            case "d2c_compare_with_design": {
-                const input = z
-                    .object({
-                    designDescription: z.string(),
-                    renderedDescription: z.string(),
-                    differences: z.array(z.string()).optional(),
-                    iteration: z.number().optional(),
-                    maxIterations: z.number().optional().default(5),
-                    scores: z.object({
-                        layout: z.number(),
-                        colors: z.number(),
-                        typography: z.number(),
-                        spacing: z.number(),
-                    }),
-                })
-                    .parse(args);
-                const { scores, iteration, maxIterations } = input;
-                const avgScore = Math.round((scores.layout + scores.colors + scores.typography + scores.spacing) / 4);
-                // 점수 바 생성 함수
-                const scoreBar = (score) => {
-                    const filled = Math.round(score / 10);
-                    return "█".repeat(filled) + "░".repeat(10 - filled);
-                };
-                const checkMark = (score) => score >= 70 ? "✓" : "✗";
-                const iterationHeader = iteration ? `반복 ${iteration}/${maxIterations}` : "";
-                return {
-                    content: [
-                        {
-                            type: "text",
-                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **디자인 비교 결과** ${iterationHeader}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-┌────────────┬────────────┬──────┬──────┐
-│ 항목       │ 점수바     │ 점수 │ 상태 │
-├────────────┼────────────┼──────┼──────┤
-│ 레이아웃   │ ${scoreBar(scores.layout)} │ ${String(scores.layout).padStart(3)}  │  ${checkMark(scores.layout)}   │
-│ 색상       │ ${scoreBar(scores.colors)} │ ${String(scores.colors).padStart(3)}  │  ${checkMark(scores.colors)}   │
-│ 타이포     │ ${scoreBar(scores.typography)} │ ${String(scores.typography).padStart(3)}  │  ${checkMark(scores.typography)}   │
-│ 간격       │ ${scoreBar(scores.spacing)} │ ${String(scores.spacing).padStart(3)}  │  ${checkMark(scores.spacing)}   │
-├────────────┼────────────┼──────┼──────┤
-│ **종합**   │ ${scoreBar(avgScore)} │ **${String(avgScore).padStart(3)}** │  ${checkMark(avgScore)}   │
-└────────────┴────────────┴──────┴──────┘
-
-${input.differences?.length ? `
-## 발견된 차이점
-${input.differences.map((d) => `- ${d}`).join("\n")}
-` : ""}
-## 다음 단계
-→ \`d2c_iteration_check\` 호출하여 계속 여부 판단`,
                         },
                     ],
                 };

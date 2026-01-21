@@ -348,37 +348,6 @@ Phase 3 DOM 비교 결과를 처리합니다.
 }
 ```
 
-## 기존 워크플로우 (레거시)
-
-기존 도구들도 하위 호환성을 위해 계속 지원됩니다.
-
-```mermaid
-sequenceDiagram
-    participant User as 사용자
-    participant AI as AI Agent
-    participant D2C as syr-d2c-workflow-mcp
-    participant Figma as figma-mcp
-    participant PW as playwright-mcp
-
-    User->>AI: "syr로 이 Figma 변환해줘"
-    
-    AI->>D2C: d2c_preflight_check()
-    AI->>D2C: d2c_get_design_rules()
-    AI->>Figma: get_design_context(figmaUrl)
-    
-    AI->>D2C: d2c_get_component_template()
-    AI->>D2C: d2c_validate_component()
-    
-    loop 완성될 때까지
-        AI->>PW: browser_navigate()
-        AI->>PW: browser_snapshot()
-        AI->>D2C: d2c_compare_with_design()
-        AI->>D2C: d2c_iteration_check()
-    end
-    
-    AI-->>User: 완성된 컴포넌트
-```
-
 ## 개발
 
 ```bash
