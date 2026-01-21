@@ -104,7 +104,7 @@ const DEFAULT_RULES = `
 // MCP 서버 생성
 const server = new Server({
     name: "syr-d2c-workflow-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
 }, {
     capabilities: {
         tools: {},
@@ -318,6 +318,196 @@ ${SERVICE_IDENTIFIERS}
                         },
                     },
                     required: ["currentScore", "iteration"],
+                },
+            },
+            // ============ 3단계 PHASE 도구들 ============
+            // Phase 1: Figma MCP 기반 스크린샷 비교
+            {
+                name: "d2c_phase1_compare",
+                description: `[Phase 1] Figma MCP로 추출한 코드의 스크린샷을 원본과 비교합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **Phase 1 - 목표 성공률: 60% (설정 가능)**
+- 비교 방법: Playwright toHaveScreenshot() 픽셀 비교
+- 수정 주체: Figma MCP (코드 재추출)
+- HITL: 매 반복마다 사용자 확인`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        successRate: {
+                            type: "number",
+                            description: "현재 성공률 (0-100, Playwright 비교 결과)",
+                        },
+                        targetRate: {
+                            type: "number",
+                            description: "목표 성공률 (기본: 60)",
+                        },
+                        iteration: {
+                            type: "number",
+                            description: "현재 반복 횟수",
+                        },
+                        maxIterations: {
+                            type: "number",
+                            description: "최대 반복 횟수 (기본: 5)",
+                        },
+                        diffDetails: {
+                            type: "string",
+                            description: "Playwright 비교에서 발견된 차이점 설명",
+                        },
+                        previousRates: {
+                            type: "array",
+                            items: { type: "number" },
+                            description: "이전 반복의 성공률들",
+                        },
+                    },
+                    required: ["successRate", "iteration"],
+                },
+            },
+            // Phase 2: LLM 기반 이미지 Diff 수정
+            {
+                name: "d2c_phase2_image_diff",
+                description: `[Phase 2] 이미지 diff를 분석하고 LLM이 코드를 수정합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **Phase 2 - 목표 성공률: 70% (설정 가능)**
+- 비교 방법: Playwright toHaveScreenshot() 픽셀 비교
+- 수정 주체: LLM (코드 직접 수정)
+- HITL: 매 반복마다 사용자 확인`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        successRate: {
+                            type: "number",
+                            description: "현재 성공률 (0-100, Playwright 비교 결과)",
+                        },
+                        targetRate: {
+                            type: "number",
+                            description: "목표 성공률 (기본: 70)",
+                        },
+                        iteration: {
+                            type: "number",
+                            description: "현재 반복 횟수",
+                        },
+                        maxIterations: {
+                            type: "number",
+                            description: "최대 반복 횟수 (기본: 5)",
+                        },
+                        diffAreas: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    area: { type: "string", description: "차이 영역 (예: header, button)" },
+                                    type: { type: "string", description: "차이 유형 (color, layout, spacing)" },
+                                    severity: { type: "string", enum: ["high", "medium", "low"] },
+                                },
+                            },
+                            description: "이미지 diff에서 발견된 차이 영역들",
+                        },
+                        previousRates: {
+                            type: "array",
+                            items: { type: "number" },
+                            description: "이전 반복의 성공률들",
+                        },
+                    },
+                    required: ["successRate", "iteration"],
+                },
+            },
+            // Phase 3: DOM 비교 기반 수정
+            {
+                name: "d2c_phase3_dom_compare",
+                description: `[Phase 3] DOM 구조를 비교하고 LLM이 코드를 수정합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **Phase 3 - 목표 성공률: 90% (설정 가능)**
+- 비교 방법: Playwright DOM 스냅샷 비교
+- 수정 주체: LLM (코드 직접 수정)
+- HITL: 매 반복마다 사용자 확인`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        successRate: {
+                            type: "number",
+                            description: "현재 성공률 (0-100, DOM 비교 결과)",
+                        },
+                        targetRate: {
+                            type: "number",
+                            description: "목표 성공률 (기본: 90)",
+                        },
+                        iteration: {
+                            type: "number",
+                            description: "현재 반복 횟수",
+                        },
+                        maxIterations: {
+                            type: "number",
+                            description: "최대 반복 횟수 (기본: 5)",
+                        },
+                        domDiffs: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    selector: { type: "string", description: "차이가 있는 요소 선택자" },
+                                    expected: { type: "string", description: "예상 값" },
+                                    actual: { type: "string", description: "실제 값" },
+                                    type: { type: "string", description: "차이 유형 (missing, extra, attribute, text)" },
+                                },
+                            },
+                            description: "DOM 비교에서 발견된 차이점들",
+                        },
+                        previousRates: {
+                            type: "array",
+                            items: { type: "number" },
+                            description: "이전 반복의 성공률들",
+                        },
+                    },
+                    required: ["successRate", "iteration"],
+                },
+            },
+            // 워크플로우 전체 상태 표시
+            {
+                name: "d2c_workflow_status",
+                description: `전체 3단계 워크플로우 진행 상황을 표시합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **3단계 Phase 시스템**:
+- Phase 1: Figma MCP 추출 (60%)
+- Phase 2: LLM 이미지 Diff (70%)
+- Phase 3: LLM DOM 비교 (90%)`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        currentPhase: {
+                            type: "number",
+                            enum: [1, 2, 3],
+                            description: "현재 Phase (1, 2, 3)",
+                        },
+                        phase1: {
+                            type: "object",
+                            properties: {
+                                status: { type: "string", enum: ["pending", "in_progress", "completed", "skipped"] },
+                                successRate: { type: "number" },
+                                iterations: { type: "number" },
+                            },
+                        },
+                        phase2: {
+                            type: "object",
+                            properties: {
+                                status: { type: "string", enum: ["pending", "in_progress", "completed", "skipped"] },
+                                successRate: { type: "number" },
+                                iterations: { type: "number" },
+                            },
+                        },
+                        phase3: {
+                            type: "object",
+                            properties: {
+                                status: { type: "string", enum: ["pending", "in_progress", "completed", "skipped"] },
+                                successRate: { type: "number" },
+                                iterations: { type: "number" },
+                            },
+                        },
+                    },
+                    required: ["currentPhase"],
                 },
             },
             // get_component_template - 템플릿 생성
@@ -668,6 +858,305 @@ ${input.differences.map((d) => `- ${d}`).join("\n")}
                     ],
                 };
             }
+            // ============ 3단계 PHASE 핸들러 ============
+            case "d2c_phase1_compare": {
+                const input = z
+                    .object({
+                    successRate: z.number(),
+                    targetRate: z.number().optional().default(60),
+                    iteration: z.number(),
+                    maxIterations: z.number().optional().default(5),
+                    diffDetails: z.string().optional(),
+                    previousRates: z.array(z.number()).optional(),
+                })
+                    .parse(args);
+                const { successRate, targetRate, iteration, maxIterations, diffDetails, previousRates } = input;
+                // 성공률 변화 계산
+                const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
+                const rateDiff = lastRate !== null ? successRate - lastRate : null;
+                // 판단 로직
+                let recommendation;
+                let reason;
+                if (iteration >= maxIterations) {
+                    recommendation = "user_confirm";
+                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
+                }
+                else if (rateDiff !== null && rateDiff < -10) {
+                    recommendation = "stop";
+                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
+                }
+                else if (successRate >= targetRate) {
+                    recommendation = "next_phase";
+                    reason = `Phase 1 목표(${targetRate}%) 달성! Phase 2로 진행`;
+                }
+                else {
+                    recommendation = "continue";
+                    reason = `목표(${targetRate}%) 미달 - Figma MCP로 재추출`;
+                }
+                const statusEmoji = recommendation === "continue" ? "🔄" :
+                    recommendation === "next_phase" ? "✅" :
+                        recommendation === "user_confirm" ? "✋" : "🛑";
+                const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
+                const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Phase 1: Figma MCP 스크린샷 비교**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────────────────────────────┐
+│ 반복: ${iteration}/${maxIterations}                              │
+├────────────────────────────────────────┤
+│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
+│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
+├────────────────────────────────────────┤
+│ 수정 주체: Figma MCP (코드 재추출)      │
+└────────────────────────────────────────┘
+
+${diffDetails ? `## 발견된 차이점\n${diffDetails}\n` : ""}
+${statusEmoji} **권장**: ${recommendation === "continue" ? "Figma MCP로 재추출 후 반복" :
+                                recommendation === "next_phase" ? "Phase 2로 진행" :
+                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
+
+**이유**: ${reason}
+
+## HITL 옵션
+- [Y] 계속 (${recommendation === "next_phase" ? "Phase 2 진행" : "반복"})
+- [N] 현재 상태로 완료
+- [M] 수동 수정 후 재비교
+- [S] 워크플로우 중단
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_phase2_image_diff": {
+                const input = z
+                    .object({
+                    successRate: z.number(),
+                    targetRate: z.number().optional().default(70),
+                    iteration: z.number(),
+                    maxIterations: z.number().optional().default(5),
+                    diffAreas: z.array(z.object({
+                        area: z.string(),
+                        type: z.string(),
+                        severity: z.enum(["high", "medium", "low"]).optional(),
+                    })).optional(),
+                    previousRates: z.array(z.number()).optional(),
+                })
+                    .parse(args);
+                const { successRate, targetRate, iteration, maxIterations, diffAreas, previousRates } = input;
+                const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
+                const rateDiff = lastRate !== null ? successRate - lastRate : null;
+                let recommendation;
+                let reason;
+                if (iteration >= maxIterations) {
+                    recommendation = "user_confirm";
+                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
+                }
+                else if (rateDiff !== null && rateDiff < -10) {
+                    recommendation = "stop";
+                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
+                }
+                else if (successRate >= targetRate) {
+                    recommendation = "next_phase";
+                    reason = `Phase 2 목표(${targetRate}%) 달성! Phase 3로 진행`;
+                }
+                else {
+                    recommendation = "continue";
+                    reason = `목표(${targetRate}%) 미달 - LLM이 코드 수정`;
+                }
+                const statusEmoji = recommendation === "continue" ? "🔄" :
+                    recommendation === "next_phase" ? "✅" :
+                        recommendation === "user_confirm" ? "✋" : "🛑";
+                const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
+                const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
+                // diff 영역 표시
+                const diffAreasText = diffAreas?.length ? diffAreas.map(d => {
+                    const severityIcon = d.severity === "high" ? "🔴" : d.severity === "medium" ? "🟡" : "🟢";
+                    return `${severityIcon} ${d.area}: ${d.type}`;
+                }).join("\n") : "";
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Phase 2: LLM 이미지 Diff 수정**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────────────────────────────┐
+│ 반복: ${iteration}/${maxIterations}                              │
+├────────────────────────────────────────┤
+│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
+│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
+├────────────────────────────────────────┤
+│ 수정 주체: LLM (코드 직접 수정)          │
+└────────────────────────────────────────┘
+
+${diffAreasText ? `## 이미지 Diff 분석\n${diffAreasText}\n` : ""}
+${statusEmoji} **권장**: ${recommendation === "continue" ? "LLM이 코드 수정 후 반복" :
+                                recommendation === "next_phase" ? "Phase 3로 진행" :
+                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
+
+**이유**: ${reason}
+
+## LLM 수정 가이드
+${diffAreas?.filter(d => d.severity === "high").map(d => `- 우선 수정: ${d.area}의 ${d.type} 문제`).join("\n") || "- 이미지 diff 결과를 기반으로 수정"}
+
+## HITL 옵션
+- [Y] 계속 (${recommendation === "next_phase" ? "Phase 3 진행" : "LLM 수정 반복"})
+- [N] 현재 상태로 완료
+- [M] 수동 수정 후 재비교
+- [S] 워크플로우 중단
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_phase3_dom_compare": {
+                const input = z
+                    .object({
+                    successRate: z.number(),
+                    targetRate: z.number().optional().default(90),
+                    iteration: z.number(),
+                    maxIterations: z.number().optional().default(5),
+                    domDiffs: z.array(z.object({
+                        selector: z.string(),
+                        expected: z.string().optional(),
+                        actual: z.string().optional(),
+                        type: z.string(),
+                    })).optional(),
+                    previousRates: z.array(z.number()).optional(),
+                })
+                    .parse(args);
+                const { successRate, targetRate, iteration, maxIterations, domDiffs, previousRates } = input;
+                const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
+                const rateDiff = lastRate !== null ? successRate - lastRate : null;
+                let recommendation;
+                let reason;
+                if (iteration >= maxIterations) {
+                    recommendation = "user_confirm";
+                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
+                }
+                else if (rateDiff !== null && rateDiff < -10) {
+                    recommendation = "stop";
+                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
+                }
+                else if (successRate >= targetRate) {
+                    recommendation = "complete";
+                    reason = `Phase 3 목표(${targetRate}%) 달성! 워크플로우 완료`;
+                }
+                else {
+                    recommendation = "continue";
+                    reason = `목표(${targetRate}%) 미달 - LLM이 DOM 기반 수정`;
+                }
+                const statusEmoji = recommendation === "continue" ? "🔄" :
+                    recommendation === "complete" ? "🎉" :
+                        recommendation === "user_confirm" ? "✋" : "🛑";
+                const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
+                const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
+                // DOM diff 표시
+                const domDiffsText = domDiffs?.length ? domDiffs.slice(0, 5).map(d => {
+                    const typeIcon = d.type === "missing" ? "❌" : d.type === "extra" ? "➕" : "🔄";
+                    return `${typeIcon} ${d.selector}: ${d.type}${d.expected ? ` (예상: ${d.expected})` : ""}`;
+                }).join("\n") : "";
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Phase 3: LLM DOM 비교 수정**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────────────────────────────┐
+│ 반복: ${iteration}/${maxIterations}                              │
+├────────────────────────────────────────┤
+│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
+│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
+├────────────────────────────────────────┤
+│ 수정 주체: LLM (DOM 기반 수정)           │
+└────────────────────────────────────────┘
+
+${domDiffsText ? `## DOM 차이점 (상위 5개)\n${domDiffsText}\n` : ""}
+${statusEmoji} **권장**: ${recommendation === "continue" ? "LLM이 DOM 기반 수정 후 반복" :
+                                recommendation === "complete" ? "워크플로우 완료!" :
+                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
+
+**이유**: ${reason}
+
+## HITL 옵션
+- [Y] 계속 (${recommendation === "complete" ? "완료" : "LLM 수정 반복"})
+- [N] 현재 상태로 완료
+- [M] 수동 수정 후 재비교
+- [S] 워크플로우 중단
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_workflow_status": {
+                const input = z
+                    .object({
+                    currentPhase: z.number(),
+                    phase1: z.object({
+                        status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
+                        successRate: z.number().optional(),
+                        iterations: z.number().optional(),
+                    }).optional(),
+                    phase2: z.object({
+                        status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
+                        successRate: z.number().optional(),
+                        iterations: z.number().optional(),
+                    }).optional(),
+                    phase3: z.object({
+                        status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
+                        successRate: z.number().optional(),
+                        iterations: z.number().optional(),
+                    }).optional(),
+                })
+                    .parse(args);
+                const getStatusIcon = (status) => {
+                    switch (status) {
+                        case "completed": return "✅";
+                        case "in_progress": return "🔄";
+                        case "skipped": return "⏭️";
+                        default: return "⬜";
+                    }
+                };
+                const formatPhase = (phase, num, target, name) => {
+                    const icon = getStatusIcon(phase?.status);
+                    const rate = phase?.successRate !== undefined ? `${phase.successRate.toFixed(1)}%` : "--%";
+                    const iter = phase?.iterations !== undefined ? `${phase.iterations}회` : "--";
+                    return `│ ${icon} Phase ${num}: ${name.padEnd(20)} │ ${rate.padStart(6)} │ ${target}% │ ${iter.padStart(4)} │`;
+                };
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **D2C 3단계 워크플로우 상태**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────────────────────┬────────┬─────┬──────┐
+│ Phase                          │ 성공률 │ 목표│ 반복 │
+├────────────────────────────────┼────────┼─────┼──────┤
+${formatPhase(input.phase1, 1, 60, "Figma MCP 추출")}
+${formatPhase(input.phase2, 2, 70, "LLM 이미지 Diff")}
+${formatPhase(input.phase3, 3, 90, "LLM DOM 비교")}
+└────────────────────────────────┴────────┴─────┴──────┘
+
+🎯 현재 Phase: **${input.currentPhase}**
+
+## Phase 흐름
+Phase 1 (60%) → Phase 2 (70%) → Phase 3 (90%) → 완료
+${input.currentPhase === 1 ? "    ↑ 현재" : input.currentPhase === 2 ? "                  ↑ 현재" : "                                    ↑ 현재"}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
             case "d2c_get_component_template": {
                 const input = z
                     .object({
@@ -842,62 +1331,93 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
                     role: "user",
                     content: {
                         type: "text",
-                        text: `## SYR D2C 워크플로우 실행
+                        text: `## SYR D2C 3단계 워크플로우 실행
 
 ### 입력 정보
 - Figma: ${figmaUrl}
 - 컴포넌트명: ${componentName}
 - 프레임워크: ${framework}
 
-### ⚠️ 중요: 매 단계마다 \`d2c_log_step\` 호출하여 진행 상황 출력!
-
-### 워크플로우 단계
-
-**Step 1: 사전 검사**
-1. \`d2c_log_step(step:1, stepName:"사전 검사", status:"start")\` 호출
-2. \`d2c_preflight_check\` 호출
-3. figma-mcp 확인: \`get_design_context\` 호출 시도
-4. playwright-mcp 확인: \`browser_snapshot\` 호출 시도
-5. \`d2c_log_step(step:1, stepName:"사전 검사", status:"done")\` 호출
-
-**Step 2: 규칙 수집**
-1. \`d2c_log_step(step:2, stepName:"규칙 수집", status:"start")\` 호출
-2. \`d2c_get_design_rules\` 호출
-3. \`d2c_log_step(step:2, stepName:"규칙 수집", status:"done")\` 호출
-
-**Step 3: Figma 디자인 가져오기**
-1. \`d2c_log_step(step:3, stepName:"Figma 디자인 가져오기", status:"start")\` 호출
-2. \`figma-mcp.get_design_context\` 호출
-3. 디자인 구조, 색상, 타이포그래피, 간격 분석
-4. \`d2c_log_step(step:3, stepName:"Figma 디자인 가져오기", status:"done")\` 호출
-
-**Step 4: 컴포넌트 생성 및 반복 개선** (핵심!)
-1. \`d2c_log_step(step:4, stepName:"컴포넌트 생성", status:"start", iteration:1)\` 호출
-2. \`d2c_get_component_template\`로 보일러플레이트 생성
-3. Figma 디자인 정보를 기반으로 코드 작성
-4. \`d2c_validate_component\`로 검증
-5. \`playwright-mcp.browser_navigate\`로 페이지 열기
-6. \`playwright-mcp.browser_snapshot\`으로 스크린샷
-7. **\`d2c_compare_with_design\`** 호출 (scores 필수 입력!)
-   - layout, colors, typography, spacing 각각 0-100점 평가
-8. **\`d2c_iteration_check\`** 호출하여 계속 여부 판단
-   - 70점 미만: 자동으로 수정 후 반복
-   - 70점 이상: 사용자에게 확인 요청
-   - 최대 5회 반복
-9. \`d2c_log_step(step:4, stepName:"컴포넌트 생성", status:"done", iteration:N)\` 호출
-
-**Step 5: 최종 검증**
-1. \`d2c_log_step(step:5, stepName:"최종 검증", status:"start")\` 호출
-2. \`d2c_validate_component\`로 최종 검증
-3. \`d2c_log_step(step:5, stepName:"최종 검증", status:"done")\` 호출
-
-**Step 6: 완료**
-1. \`d2c_log_step(step:6, stepName:"완료", status:"done")\` 호출
-2. 최종 코드와 파일 경로 보고
-3. 반복 히스토리 요약 (점수 변화)
+### 📊 3단계 Phase 시스템
+| Phase | 목표 | 비교 방법 | 수정 주체 |
+|-------|------|----------|----------|
+| **1** | 60%  | Playwright 스크린샷 | Figma MCP 재추출 |
+| **2** | 70%  | Playwright 이미지 diff | LLM 코드 수정 |
+| **3** | 90%  | Playwright DOM 비교 | LLM 코드 수정 |
 
 ---
-위 워크플로우대로 진행해주세요. **매 단계마다 d2c_log_step 호출 필수!**`,
+
+### Step 1: 사전 검사
+1. \`d2c_log_step(step:1, stepName:"사전 검사", status:"start")\`
+2. \`d2c_preflight_check\` 호출
+3. figma-mcp, playwright-mcp 확인
+4. \`d2c_log_step(step:1, stepName:"사전 검사", status:"done")\`
+
+### Step 2: Figma 디자인 가져오기
+1. \`d2c_log_step(step:2, stepName:"Figma 디자인", status:"start")\`
+2. \`figma-mcp.get_design_context\` 호출
+3. \`figma-mcp.get_screenshot\` 으로 원본 스크린샷 저장
+4. \`d2c_log_step(step:2, stepName:"Figma 디자인", status:"done")\`
+
+---
+
+### 🔄 Phase 1: Figma MCP 추출 (목표 60%)
+1. \`d2c_log_step(step:3, stepName:"Phase 1", status:"start", iteration:1)\`
+2. \`d2c_get_component_template\`로 템플릿 생성
+3. **Figma MCP로 코드 추출/수정**
+4. \`playwright-mcp.browser_navigate\`로 렌더링
+5. \`playwright-mcp.browser_screenshot\`으로 스크린샷
+6. **Playwright toHaveScreenshot()으로 비교하여 성공률 계산**
+7. **\`d2c_phase1_compare\`** 호출 (successRate, iteration 필수!)
+8. **HITL 확인**: 사용자 응답에 따라:
+   - [Y] → 60% 미달이면 반복, 달성이면 Phase 2로
+   - [M] → 수동 수정 후 재비교
+   - [N] → 현재 상태로 다음 단계
+9. \`d2c_log_step(step:3, stepName:"Phase 1", status:"done")\`
+
+---
+
+### 🔄 Phase 2: LLM 이미지 Diff (목표 70%)
+1. \`d2c_log_step(step:4, stepName:"Phase 2", status:"start", iteration:1)\`
+2. **Playwright 이미지 diff 분석**
+3. diff 결과 기반으로 **LLM이 코드 수정**
+4. 렌더링 후 스크린샷 비교
+5. **\`d2c_phase2_image_diff\`** 호출 (successRate, diffAreas 포함!)
+6. **HITL 확인**: 사용자 응답에 따라:
+   - [Y] → 70% 미달이면 LLM 수정 반복, 달성이면 Phase 3로
+   - [M] → 수동 수정 후 재비교
+   - [N] → 현재 상태로 다음 단계
+7. \`d2c_log_step(step:4, stepName:"Phase 2", status:"done")\`
+
+---
+
+### 🔄 Phase 3: LLM DOM 비교 (목표 90%)
+1. \`d2c_log_step(step:5, stepName:"Phase 3", status:"start", iteration:1)\`
+2. **Playwright DOM 스냅샷 비교**
+3. DOM 차이 기반으로 **LLM이 코드 수정**
+4. 렌더링 후 DOM 비교
+5. **\`d2c_phase3_dom_compare\`** 호출 (successRate, domDiffs 포함!)
+6. **HITL 확인**: 사용자 응답에 따라:
+   - [Y] → 90% 미달이면 LLM 수정 반복, 달성이면 완료
+   - [M] → 수동 수정 후 재비교
+   - [N] → 현재 상태로 완료
+7. \`d2c_log_step(step:5, stepName:"Phase 3", status:"done")\`
+
+---
+
+### Step 6: 완료
+1. \`d2c_log_step(step:6, stepName:"완료", status:"done")\`
+2. \`d2c_workflow_status\` 호출하여 최종 상태 표시
+3. 최종 코드와 파일 경로 보고
+4. 각 Phase별 성공률 변화 히스토리 요약
+
+---
+
+**⚠️ 중요 규칙**:
+- 매 Phase마다 **반드시 HITL 확인** (사용자에게 계속 여부 질문)
+- 모든 Phase에서 사용자가 수동 수정 가능 ([M] 옵션)
+- 성공률은 Playwright 비교 결과를 기반으로 객관적으로 측정
+- \`d2c_workflow_status\`로 언제든 전체 진행 상황 확인 가능`,
                     },
                 },
             ],
