@@ -6,19 +6,719 @@ import { z } from "zod";
 import { glob } from "glob";
 import * as fs from "fs/promises";
 import * as path from "path";
+import pixelmatch from "pixelmatch";
+import { PNG } from "pngjs";
+import { exec } from "child_process";
+import { promisify } from "util";
+const execAsync = promisify(exec);
 // 환경 변수에서 설정 읽기
 const RULES_PATHS = process.env.RULES_PATHS?.split(",").map((p) => p.trim()) || [];
 const RULES_GLOB = process.env.RULES_GLOB || "";
 const CONFIG_PATH = process.env.D2C_CONFIG_PATH || "";
 const PROJECT_ROOT = process.env.D2C_PROJECT_ROOT || process.cwd();
+// Baseline 스크린샷 경로 (Figma에서 export 필수)
+const BASELINE_PATH = path.join(PROJECT_ROOT, "d2c-baseline", "design.png");
+// Phase별 참고 기준 (일반적 달성 수준) - 환경변수로 오버라이드 가능
+// ⚠️ 이 값은 "목표"가 아닌 "참고 기준"으로만 표시됨
+// 모든 판단은 사용자가 HITL에서 직접 수행
+const PHASE_TARGETS = {
+    phase1: parseInt(process.env.D2C_PHASE1_TARGET || "60", 10), // Phase 1 참고 기준
+    phase2: parseInt(process.env.D2C_PHASE2_TARGET || "70", 10), // Phase 2 참고 기준
+    phase3: parseInt(process.env.D2C_PHASE3_TARGET || "90", 10), // Phase 3 참고 기준
+};
 // OpenSpec 규칙 탐지 경로
 const OPENSPEC_SEARCH_PATHS = [
     "openspec/specs/*/spec.md",
     ".cursor/openspec/specs/*/spec.md",
     "docs/openspec/specs/*/spec.md",
 ];
+// AI 어시스턴트 설정 파일 경로
+const AI_SETUP_PATHS = {
+    cursor: {
+        rules: [".cursor/rules", ".cursorrules"],
+        description: "Cursor AI Rules",
+    },
+    copilot: {
+        rules: [".github/copilot-instructions.md"],
+        description: "GitHub Copilot Instructions",
+    },
+};
+// D2C 워크플로우용 추천 Cursor Rules
+const RECOMMENDED_CURSOR_RULES = `# SYR D2C 워크플로우 규칙
+
+## 서비스 식별
+다음 키워드가 포함된 요청에서 syr-d2c-workflow-mcp를 사용하세요:
+- "syr", "d2c", "디자인 투 코드", "Figma 변환"
+- "컴포넌트로 만들어줘", "코드로 변환해줘"
+
+## 워크플로우 규칙
+
+### Phase 시스템
+1. **Phase 1** (목표 60%): Figma MCP로 코드 추출 → Playwright 스크린샷 비교
+2. **Phase 2** (목표 70%): 이미지 diff 분석 → LLM 코드 수정
+3. **Phase 3** (목표 90%): DOM 비교 → LLM 코드 수정
+
+### 필수 도구 사용 순서
+1. \`d2c_preflight_check\` - 의존성 확인
+2. \`d2c_check_ai_setup\` - AI 설정 확인
+3. \`d2c_load_openspec_rules\` - 규칙 로드
+4. \`d2c_get_workflow_tasks\` - 체크리스트 확인
+5. Phase별 도구 (\`d2c_phase1_compare\`, \`d2c_phase2_image_diff\`, \`d2c_phase3_dom_compare\`)
+6. \`d2c_validate_against_spec\` - 규칙 검증
+7. \`d2c_workflow_status\` - 진행 상황 확인
+
+### HITL (Human-in-the-Loop)
+- 매 Phase 반복마다 사용자 확인 필수
+- [Y] 계속, [N] 완료, [M] 수동 수정, [S] 중단
+
+### 코드 품질 규칙
+- 컴포넌트: PascalCase
+- Props: TypeScript interface 정의
+- 접근성: aria-*, role 속성 포함
+- 반응형: Mobile-first 접근
+
+## 상태 관리
+- \`d2c_workflow_status\`로 언제든 현재 Phase 확인 가능
+- Phase 전환 시 이전 Phase 결과 요약 제공
+`;
+// D2C 워크플로우용 추천 Copilot Instructions
+const RECOMMENDED_COPILOT_INSTRUCTIONS = `# SYR D2C 워크플로우 가이드
+
+## 개요
+이 프로젝트는 Figma 디자인을 코드로 변환하는 D2C(Design-to-Code) 워크플로우를 사용합니다.
+
+## MCP 서버
+- **syr-d2c-workflow-mcp**: 3단계 Phase 시스템으로 디자인-코드 변환 품질 관리
+- **figma-mcp**: Figma 디자인 컨텍스트 및 코드 추출
+- **playwright-mcp**: 렌더링 결과 스크린샷/DOM 비교
+
+## 3단계 Phase 시스템
+| Phase | 목표 성공률 | 비교 방법 | 수정 주체 |
+|-------|------------|----------|----------|
+| 1 | 60% | Playwright 스크린샷 | Figma MCP 재추출 |
+| 2 | 70% | 이미지 diff | LLM 코드 수정 |
+| 3 | 90% | DOM 비교 | LLM 코드 수정 |
+
+## 코드 컨벤션
+- React 컴포넌트: PascalCase (예: ButtonPrimary)
+- 파일명: kebab-case (예: button-primary.tsx)
+- Props: \`interface ComponentNameProps\` 형식
+- 접근성: 모든 인터랙티브 요소에 ARIA 속성
+
+## 워크플로우 트리거 키워드
+다음 키워드가 포함되면 D2C 워크플로우 실행:
+- "syr", "d2c", "디자인 투 코드"
+- "Figma 변환", "컴포넌트로 만들어줘"
+`;
+// Playwright 테스트 디렉토리
+const PLAYWRIGHT_TEST_DIR = path.join(PROJECT_ROOT, ".d2c-tests");
+// Playwright 시각적 비교 테스트 생성 (Phase 1, 2용)
+async function generateVisualTest(testName, targetUrl, baselineImagePath, maxDiffPixels = 100, threshold = 0.1) {
+    const testDir = PLAYWRIGHT_TEST_DIR;
+    await fs.mkdir(testDir, { recursive: true });
+    // baseline 이미지를 스냅샷 디렉토리에 복사
+    const snapshotDir = path.join(testDir, `${testName}.spec.ts-snapshots`);
+    await fs.mkdir(snapshotDir, { recursive: true });
+    const baselineDest = path.join(snapshotDir, `${testName}-baseline-1-chromium-darwin.png`);
+    await fs.copyFile(baselineImagePath, baselineDest);
+    const testContent = `import { test, expect } from '@playwright/test';
+
+test('${testName}', async ({ page }) => {
+  await page.goto('${targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  await expect(page).toHaveScreenshot('${testName}-baseline.png', {
+    maxDiffPixels: ${maxDiffPixels},
+    threshold: ${threshold},
+  });
+});
+`;
+    const testPath = path.join(testDir, `${testName}.spec.ts`);
+    await fs.writeFile(testPath, testContent, "utf-8");
+    return testPath;
+}
+// Playwright DOM golden 비교 테스트 생성 (Phase 3용)
+async function generateDomGoldenTest(testName, targetUrl, goldenDomPath, selectors = ["body"]) {
+    const testDir = PLAYWRIGHT_TEST_DIR;
+    await fs.mkdir(testDir, { recursive: true });
+    // golden DOM 파일 읽기
+    const goldenDom = await fs.readFile(goldenDomPath, "utf-8");
+    const testContent = `import { test, expect } from '@playwright/test';
+
+const goldenDom = ${JSON.stringify(JSON.parse(goldenDom), null, 2)};
+
+test('${testName} - DOM comparison', async ({ page }) => {
+  await page.goto('${targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const selectors = ${JSON.stringify(selectors)};
+  const results = [];
+  
+  for (const selector of selectors) {
+    const elements = await page.locator(selector).all();
+    
+    for (const element of elements) {
+      const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+      const id = await element.getAttribute('id');
+      const className = await element.getAttribute('class');
+      const textContent = await element.evaluate(el => el.textContent?.trim().substring(0, 100));
+      
+      results.push({
+        selector,
+        tagName,
+        id,
+        className,
+        textContent
+      });
+    }
+  }
+  
+  // golden과 비교
+  const matched = results.filter((r, i) => {
+    const golden = goldenDom[i];
+    if (!golden) return false;
+    return r.tagName === golden.tagName && 
+           r.id === golden.id &&
+           r.className === golden.className;
+  });
+  
+  const successRate = (matched.length / Math.max(results.length, goldenDom.length)) * 100;
+  
+  console.log('DOM_COMPARISON_RESULT:', JSON.stringify({
+    total: Math.max(results.length, goldenDom.length),
+    matched: matched.length,
+    successRate: successRate.toFixed(2)
+  }));
+  
+  // 90% 이상 일치해야 통과
+  expect(successRate).toBeGreaterThanOrEqual(90);
+});
+`;
+    const testPath = path.join(testDir, `${testName}-dom.spec.ts`);
+    await fs.writeFile(testPath, testContent, "utf-8");
+    return testPath;
+}
+// Playwright config 생성
+async function ensurePlaywrightConfig() {
+    const configPath = path.join(PLAYWRIGHT_TEST_DIR, "playwright.config.ts");
+    try {
+        await fs.access(configPath);
+        return; // 이미 존재
+    }
+    catch {
+        // 생성
+    }
+    const configContent = `import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: '.',
+  timeout: 30000,
+  expect: {
+    timeout: 10000,
+    toHaveScreenshot: {
+      maxDiffPixelRatio: 0.1,
+    },
+  },
+  use: {
+    headless: true,
+    viewport: { width: 1280, height: 720 },
+    screenshot: 'only-on-failure',
+  },
+  reporter: [
+    ['json', { outputFile: 'test-results.json' }],
+    ['line']
+  ],
+  outputDir: './test-results',
+});
+`;
+    await fs.writeFile(configPath, configContent, "utf-8");
+}
+// Playwright 테스트 실행 및 결과 파싱
+async function runPlaywrightTest(testPath) {
+    await ensurePlaywrightConfig();
+    const testDir = path.dirname(testPath);
+    const testFile = path.basename(testPath);
+    try {
+        const { stdout, stderr } = await execAsync(`npx playwright test ${testFile} --reporter=json`, {
+            cwd: testDir,
+            timeout: 60000,
+            env: { ...process.env, CI: "true" }
+        });
+        // JSON 결과 파싱
+        const resultsPath = path.join(testDir, "test-results.json");
+        try {
+            const resultsJson = await fs.readFile(resultsPath, "utf-8");
+            const results = JSON.parse(resultsJson);
+            const passed = results.stats?.expected || 0;
+            const failed = results.stats?.unexpected || 0;
+            const total = passed + failed;
+            return {
+                success: failed === 0,
+                passed,
+                failed,
+                total,
+                successRate: total > 0 ? (passed / total) * 100 : 0,
+                details: stdout + stderr,
+            };
+        }
+        catch {
+            // JSON 파싱 실패 시 stdout에서 파싱
+            return parsePlaywrightOutput(stdout + stderr);
+        }
+    }
+    catch (error) {
+        const execError = error;
+        // 테스트 실패해도 결과 파싱 시도
+        const output = (execError.stdout || "") + (execError.stderr || "");
+        // DOM 비교 결과 파싱 시도
+        const domMatch = output.match(/DOM_COMPARISON_RESULT:\s*(\{[^}]+\})/);
+        if (domMatch) {
+            try {
+                const domResult = JSON.parse(domMatch[1]);
+                return {
+                    success: parseFloat(domResult.successRate) >= 90,
+                    passed: domResult.matched,
+                    failed: domResult.total - domResult.matched,
+                    total: domResult.total,
+                    successRate: parseFloat(domResult.successRate),
+                    details: output,
+                };
+            }
+            catch {
+                // 파싱 실패
+            }
+        }
+        return parsePlaywrightOutput(output);
+    }
+}
+// Playwright 출력에서 결과 파싱
+function parsePlaywrightOutput(output) {
+    // "1 passed" 또는 "1 failed" 패턴 찾기
+    const passedMatch = output.match(/(\d+)\s+passed/);
+    const failedMatch = output.match(/(\d+)\s+failed/);
+    const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0;
+    const failed = failedMatch ? parseInt(failedMatch[1], 10) : 0;
+    const total = passed + failed;
+    // diff 픽셀 수 파싱
+    const diffMatch = output.match(/(\d+)\s+pixels.*differ/i);
+    const diffPixels = diffMatch ? parseInt(diffMatch[1], 10) : undefined;
+    // maxDiffPixels 파싱
+    const maxDiffMatch = output.match(/maxDiffPixels:\s*(\d+)/);
+    const maxDiffPixels = maxDiffMatch ? parseInt(maxDiffMatch[1], 10) : undefined;
+    // 스냅샷 경로 파싱
+    const snapshotMatch = output.match(/Screenshot comparison failed:?\s*([^\n]+)/i);
+    const diffPathMatch = output.match(/diff:\s*([^\n]+\.png)/i);
+    let successRate = 0;
+    if (total > 0) {
+        successRate = (passed / total) * 100;
+    }
+    else if (diffPixels !== undefined && maxDiffPixels !== undefined) {
+        // 픽셀 기반 성공률 계산
+        successRate = Math.max(0, 100 - (diffPixels / maxDiffPixels) * 100);
+    }
+    return {
+        success: failed === 0 && passed > 0,
+        passed,
+        failed,
+        total: total || 1,
+        successRate,
+        details: output,
+        diffPixels,
+        maxDiffPixels,
+        snapshotPath: snapshotMatch?.[1],
+        diffPath: diffPathMatch?.[1],
+    };
+}
+// DOM 구조 비교 함수
+function compareDomStructures(expected, actual, parentSelector = "") {
+    const result = {
+        successRate: 0,
+        totalElements: 0,
+        matchedElements: 0,
+        missingElements: [],
+        extraElements: [],
+        attributeDiffs: [],
+        textDiffs: [],
+    };
+    // 요소를 selector로 매핑
+    const getSelector = (el, index) => {
+        if (el.id)
+            return `#${el.id}`;
+        const classStr = el.classes.length > 0 ? `.${el.classes.join(".")}` : "";
+        return `${parentSelector} ${el.tag}${classStr}:nth-child(${index + 1})`.trim();
+    };
+    const expectedMap = new Map();
+    const actualMap = new Map();
+    expected.forEach((el, i) => {
+        const sel = getSelector(el, i);
+        expectedMap.set(sel, el);
+        result.totalElements++;
+    });
+    actual.forEach((el, i) => {
+        const sel = getSelector(el, i);
+        actualMap.set(sel, el);
+    });
+    // 비교
+    for (const [selector, expectedEl] of expectedMap) {
+        const actualEl = actualMap.get(selector);
+        if (!actualEl) {
+            result.missingElements.push(selector);
+            continue;
+        }
+        let elementMatched = true;
+        // 태그 비교
+        if (expectedEl.tag !== actualEl.tag) {
+            elementMatched = false;
+        }
+        // 주요 속성 비교 (class, style 등)
+        const importantAttrs = ["class", "style", "href", "src", "alt", "role", "aria-label"];
+        for (const attr of importantAttrs) {
+            const expVal = expectedEl.attributes[attr] || "";
+            const actVal = actualEl.attributes[attr] || "";
+            if (expVal !== actVal && expVal !== "") {
+                result.attributeDiffs.push({
+                    selector,
+                    attribute: attr,
+                    expected: expVal,
+                    actual: actVal,
+                });
+                elementMatched = false;
+            }
+        }
+        // 텍스트 비교 (리프 노드만)
+        if (expectedEl.children.length === 0 && actualEl.children.length === 0) {
+            const expText = (expectedEl.textContent || "").trim();
+            const actText = (actualEl.textContent || "").trim();
+            if (expText !== actText && expText !== "") {
+                result.textDiffs.push({
+                    selector,
+                    expected: expText,
+                    actual: actText,
+                });
+                elementMatched = false;
+            }
+        }
+        if (elementMatched) {
+            result.matchedElements++;
+        }
+        // 자식 요소 재귀 비교
+        if (expectedEl.children.length > 0 || actualEl.children.length > 0) {
+            const childResult = compareDomStructures(expectedEl.children, actualEl.children, selector);
+            result.totalElements += childResult.totalElements;
+            result.matchedElements += childResult.matchedElements;
+            result.missingElements.push(...childResult.missingElements);
+            result.extraElements.push(...childResult.extraElements);
+            result.attributeDiffs.push(...childResult.attributeDiffs);
+            result.textDiffs.push(...childResult.textDiffs);
+        }
+        actualMap.delete(selector);
+    }
+    // 예상에 없는 추가 요소
+    for (const selector of actualMap.keys()) {
+        result.extraElements.push(selector);
+    }
+    // 성공률 계산
+    if (result.totalElements > 0) {
+        result.successRate = Math.round((result.matchedElements / result.totalElements) * 10000) / 100;
+    }
+    else {
+        result.successRate = 100;
+    }
+    return result;
+}
+// 이미지 로드 함수 (base64 또는 파일 경로)
+async function loadImage(input) {
+    let buffer;
+    if (input.startsWith("data:image/png;base64,")) {
+        // data URL 형식
+        buffer = Buffer.from(input.replace("data:image/png;base64,", ""), "base64");
+    }
+    else if (input.match(/^[A-Za-z0-9+/=]+$/)) {
+        // 순수 base64
+        buffer = Buffer.from(input, "base64");
+    }
+    else {
+        // 파일 경로
+        const filePath = path.isAbsolute(input) ? input : path.join(PROJECT_ROOT, input);
+        buffer = await fs.readFile(filePath);
+    }
+    return new Promise((resolve, reject) => {
+        new PNG().parse(buffer, (err, data) => {
+            if (err)
+                reject(err);
+            else
+                resolve(data);
+        });
+    });
+}
+// pixelmatch를 사용한 이미지 비교
+async function compareImages(originalInput, renderedInput, threshold = 0.1, generateDiff = false) {
+    const original = await loadImage(originalInput);
+    const rendered = await loadImage(renderedInput);
+    // 이미지 크기가 다른 경우 처리
+    if (original.width !== rendered.width || original.height !== rendered.height) {
+        // 더 큰 크기로 맞추고 나머지는 빈 공간으로 처리
+        const width = Math.max(original.width, rendered.width);
+        const height = Math.max(original.height, rendered.height);
+        const resizeImage = (img, w, h) => {
+            const resized = new PNG({ width: w, height: h });
+            // 투명 배경으로 채움
+            for (let i = 0; i < w * h * 4; i += 4) {
+                resized.data[i] = 0;
+                resized.data[i + 1] = 0;
+                resized.data[i + 2] = 0;
+                resized.data[i + 3] = 0;
+            }
+            // 원본 이미지 복사
+            for (let y = 0; y < img.height; y++) {
+                for (let x = 0; x < img.width; x++) {
+                    const srcIdx = (y * img.width + x) * 4;
+                    const dstIdx = (y * w + x) * 4;
+                    resized.data[dstIdx] = img.data[srcIdx];
+                    resized.data[dstIdx + 1] = img.data[srcIdx + 1];
+                    resized.data[dstIdx + 2] = img.data[srcIdx + 2];
+                    resized.data[dstIdx + 3] = img.data[srcIdx + 3];
+                }
+            }
+            return resized;
+        };
+        const resizedOriginal = resizeImage(original, width, height);
+        const resizedRendered = resizeImage(rendered, width, height);
+        const diff = generateDiff ? new PNG({ width, height }) : null;
+        const diffPixels = pixelmatch(resizedOriginal.data, resizedRendered.data, diff?.data || null, width, height, { threshold });
+        const totalPixels = width * height;
+        const successRate = Math.round((1 - diffPixels / totalPixels) * 10000) / 100;
+        let diffImage;
+        if (diff) {
+            const diffBuffer = PNG.sync.write(diff);
+            diffImage = `data:image/png;base64,${diffBuffer.toString("base64")}`;
+        }
+        return {
+            successRate,
+            totalPixels,
+            diffPixels,
+            width,
+            height,
+            diffImage,
+        };
+    }
+    const { width, height } = original;
+    const diff = generateDiff ? new PNG({ width, height }) : null;
+    const diffPixels = pixelmatch(original.data, rendered.data, diff?.data || null, width, height, { threshold });
+    const totalPixels = width * height;
+    const successRate = Math.round((1 - diffPixels / totalPixels) * 10000) / 100;
+    let diffImage;
+    if (diff) {
+        const diffBuffer = PNG.sync.write(diff);
+        diffImage = `data:image/png;base64,${diffBuffer.toString("base64")}`;
+    }
+    return {
+        successRate,
+        totalPixels,
+        diffPixels,
+        width,
+        height,
+        diffImage,
+    };
+}
 // OpenSpec 규칙 캐시
 let cachedOpenSpecRules = null;
+// AI 설정 확인 함수
+async function checkAISetup() {
+    const status = {
+        cursor: { found: false },
+        copilot: { found: false },
+    };
+    // Cursor rules 확인
+    for (const rulePath of AI_SETUP_PATHS.cursor.rules) {
+        const fullPath = path.join(PROJECT_ROOT, rulePath);
+        try {
+            const stat = await fs.stat(fullPath);
+            if (stat.isDirectory()) {
+                // .cursor/rules 폴더인 경우 내부에 .mdc 파일이 있는지 확인
+                const files = await glob(path.join(fullPath, "*.mdc"));
+                if (files.length > 0) {
+                    status.cursor = { found: true, path: rulePath, type: "folder" };
+                    break;
+                }
+            }
+            else if (stat.isFile()) {
+                // .cursorrules 파일인 경우
+                status.cursor = { found: true, path: rulePath, type: "file" };
+                break;
+            }
+        }
+        catch {
+            // 파일/폴더 없음
+        }
+    }
+    // Copilot instructions 확인
+    for (const rulePath of AI_SETUP_PATHS.copilot.rules) {
+        const fullPath = path.join(PROJECT_ROOT, rulePath);
+        try {
+            await fs.access(fullPath);
+            status.copilot = { found: true, path: rulePath };
+            break;
+        }
+        catch {
+            // 파일 없음
+        }
+    }
+    return status;
+}
+// 규칙 파일 존재 여부 확인 함수
+async function checkRulesFiles() {
+    const status = {
+        found: false,
+        files: [],
+        sources: {
+            rulesPath: false,
+            rulesGlob: false,
+            configPath: false,
+            openSpec: false,
+        },
+        message: "",
+    };
+    // 1. RULES_PATHS에서 확인
+    if (RULES_PATHS.length > 0) {
+        for (const rulePath of RULES_PATHS) {
+            try {
+                if (rulePath.includes("*")) {
+                    const files = await glob(rulePath);
+                    const mdFiles = files.filter(f => f.endsWith(".md"));
+                    if (mdFiles.length > 0) {
+                        status.files.push(...mdFiles);
+                        status.sources.rulesPath = true;
+                    }
+                }
+                else {
+                    const fullPath = path.isAbsolute(rulePath) ? rulePath : path.join(PROJECT_ROOT, rulePath);
+                    await fs.access(fullPath);
+                    if (fullPath.endsWith(".md")) {
+                        status.files.push(fullPath);
+                        status.sources.rulesPath = true;
+                    }
+                }
+            }
+            catch {
+                // 파일 없음
+            }
+        }
+    }
+    // 2. RULES_GLOB에서 확인
+    if (RULES_GLOB) {
+        const patterns = RULES_GLOB.split(",").map(p => p.trim());
+        for (const pattern of patterns) {
+            try {
+                const files = await glob(pattern);
+                const mdFiles = files.filter(f => f.endsWith(".md"));
+                if (mdFiles.length > 0) {
+                    status.files.push(...mdFiles.filter(f => !status.files.includes(f)));
+                    status.sources.rulesGlob = true;
+                }
+            }
+            catch {
+                // 패턴 매칭 실패
+            }
+        }
+    }
+    // 3. CONFIG_PATH에서 확인
+    if (CONFIG_PATH) {
+        try {
+            const configContent = await fs.readFile(CONFIG_PATH, "utf-8");
+            const config = JSON.parse(configContent);
+            if (config.rules && Array.isArray(config.rules) && config.rules.length > 0) {
+                for (const rulePath of config.rules) {
+                    const fullPath = path.isAbsolute(rulePath) ? rulePath : path.join(PROJECT_ROOT, rulePath);
+                    try {
+                        await fs.access(fullPath);
+                        if (fullPath.endsWith(".md") && !status.files.includes(fullPath)) {
+                            status.files.push(fullPath);
+                            status.sources.configPath = true;
+                        }
+                    }
+                    catch {
+                        // 파일 없음
+                    }
+                }
+            }
+        }
+        catch {
+            // 설정 파일 없음
+        }
+    }
+    // 4. OpenSpec에서 확인
+    for (const searchPath of OPENSPEC_SEARCH_PATHS) {
+        const specsDir = path.join(PROJECT_ROOT, searchPath);
+        try {
+            const specPattern = path.join(specsDir, "*/spec.md");
+            const specFiles = await glob(specPattern);
+            if (specFiles.length > 0) {
+                status.files.push(...specFiles.filter(f => !status.files.includes(f)));
+                status.sources.openSpec = true;
+            }
+        }
+        catch {
+            // OpenSpec 없음
+        }
+    }
+    // 결과 집계
+    status.found = status.files.length > 0;
+    if (!status.found) {
+        status.message = `❌ **규칙 파일이 없습니다!**
+
+Phase를 시작하려면 디자인 규칙 파일(.md)이 필요합니다.
+
+## 규칙 파일 설정 방법
+
+### 방법 1: 환경변수 RULES_PATHS 설정
+\`\`\`bash
+export RULES_PATHS="./rules/design-rules.md,./rules/component-rules.md"
+\`\`\`
+
+### 방법 2: 환경변수 RULES_GLOB 설정
+\`\`\`bash
+export RULES_GLOB="./rules/**/*.md"
+\`\`\`
+
+### 방법 3: OpenSpec 규칙 생성
+\`\`\`bash
+mkdir -p openspec/specs/design-rules
+touch openspec/specs/design-rules/spec.md
+\`\`\`
+
+### 방법 4: 설정 파일 사용
+\`\`\`bash
+export D2C_CONFIG_PATH="./d2c-config.json"
+\`\`\`
+\`\`\`json
+// d2c-config.json
+{
+  "rules": ["./rules/design-rules.md"]
+}
+\`\`\`
+
+⚠️ **규칙 파일 경로를 알려주세요** 또는 위 방법 중 하나로 설정해주세요.`;
+    }
+    else {
+        const sourceList = [];
+        if (status.sources.rulesPath)
+            sourceList.push("RULES_PATHS");
+        if (status.sources.rulesGlob)
+            sourceList.push("RULES_GLOB");
+        if (status.sources.configPath)
+            sourceList.push("D2C_CONFIG_PATH");
+        if (status.sources.openSpec)
+            sourceList.push("OpenSpec");
+        status.message = `✅ **규칙 파일 발견** (${status.files.length}개)
+
+**소스**: ${sourceList.join(", ")}
+
+**파일 목록**:
+${status.files.slice(0, 10).map(f => `- \`${path.relative(PROJECT_ROOT, f)}\``).join("\n")}${status.files.length > 10 ? `\n... 외 ${status.files.length - 10}개` : ""}`;
+    }
+    return status;
+}
 // OpenSpec spec.md 파싱
 async function parseOpenSpecFile(filePath) {
     try {
@@ -86,11 +786,11 @@ async function loadOpenSpecRules(forceReload = false) {
     cachedOpenSpecRules = rules;
     return rules;
 }
-// Phase별 Tasks 정의
+// Phase별 Tasks 정의 (PHASE_TARGETS 참조)
 const PHASE_TASKS = {
     1: {
         name: "Phase 1: Figma MCP 추출",
-        target: 60,
+        target: PHASE_TARGETS.phase1,
         tasks: [
             { id: "1.1", content: "Figma 디자인 컨텍스트 가져오기" },
             { id: "1.2", content: "Figma MCP로 코드 추출" },
@@ -102,7 +802,7 @@ const PHASE_TASKS = {
     },
     2: {
         name: "Phase 2: LLM 이미지 Diff",
-        target: 70,
+        target: PHASE_TARGETS.phase2,
         tasks: [
             { id: "2.1", content: "Playwright 이미지 diff 분석" },
             { id: "2.2", content: "diff 영역 식별" },
@@ -114,7 +814,7 @@ const PHASE_TASKS = {
     },
     3: {
         name: "Phase 3: LLM DOM 비교",
-        target: 90,
+        target: PHASE_TARGETS.phase3,
         tasks: [
             { id: "3.1", content: "Playwright DOM 스냅샷 추출" },
             { id: "3.2", content: "DOM 구조 비교" },
@@ -220,7 +920,7 @@ const DEFAULT_RULES = `
 // MCP 서버 생성
 const server = new Server({
     name: "syr-d2c-workflow-mcp",
-    version: "0.4.0",
+    version: "1.1.0",
 }, {
     capabilities: {
         tools: {},
@@ -242,14 +942,41 @@ ${SERVICE_IDENTIFIERS}
 - figma-mcp 설치 여부
 - playwright-mcp 설치 여부
 - 규칙 파일 존재 여부
+- AI 어시스턴트 설정 (Cursor Rules, Copilot Instructions)
 
 💡 **사용법**: 
 1. 이 도구를 먼저 호출
 2. 반환된 check_method로 각 MCP 확인
-3. 누락된 것이 있으면 install_guide 안내`,
+3. 누락된 것이 있으면 install_guide 안내
+4. AI 설정이 없으면 추천 설정 제안`,
                 inputSchema: {
                     type: "object",
                     properties: {},
+                },
+            },
+            // check_ai_setup - AI 어시스턴트 설정 확인
+            {
+                name: "d2c_check_ai_setup",
+                description: `Cursor Rules와 GitHub Copilot Instructions 설정 여부를 확인합니다.
+${SERVICE_IDENTIFIERS}
+
+🔍 **확인 항목**:
+- Cursor Rules (.cursor/rules/*.mdc 또는 .cursorrules)
+- GitHub Copilot Instructions (.github/copilot-instructions.md)
+
+💡 **기능**:
+- 설정이 없으면 D2C 워크플로우에 최적화된 추천 설정 제안
+- 추천 설정 내용을 파일로 저장하는 명령어 제공
+
+⚠️ **Phase 시작 전 이 도구로 AI 설정을 확인하세요!**`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        showRecommendations: {
+                            type: "boolean",
+                            description: "추천 설정 내용 전체 표시 (기본: true)",
+                        },
+                    },
                 },
             },
             // get_design_rules - 규칙 수집
@@ -309,6 +1036,269 @@ ${SERVICE_IDENTIFIERS}
                     required: ["code", "componentName"],
                 },
             },
+            // compare_screenshots - pixelmatch 기반 스크린샷 비교
+            {
+                name: "d2c_compare_screenshots",
+                description: `두 스크린샷을 픽셀 단위로 비교하여 객관적인 성공률을 계산합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **pixelmatch 기반 객관적 비교**:
+- 원본 이미지와 렌더링 결과를 픽셀 단위로 비교
+- 차이 픽셀 수 기반 성공률 자동 계산
+- diff 이미지 생성 (옵션)
+
+🔢 **성공률 계산**:
+\`성공률 = (1 - diffPixels / totalPixels) * 100\`
+
+💡 **사용법**:
+1. figma-mcp로 원본 스크린샷 획득
+2. playwright-mcp로 렌더링 결과 스크린샷 획득
+3. 이 도구로 두 이미지 비교
+4. 반환된 successRate를 Phase 도구에 전달`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        originalImage: {
+                            type: "string",
+                            description: "원본 이미지 (base64 PNG 또는 파일 경로)",
+                        },
+                        renderedImage: {
+                            type: "string",
+                            description: "렌더링 결과 이미지 (base64 PNG 또는 파일 경로)",
+                        },
+                        threshold: {
+                            type: "number",
+                            description: "픽셀 차이 임계값 (0-1, 기본 0.1). 낮을수록 엄격",
+                        },
+                        generateDiff: {
+                            type: "boolean",
+                            description: "diff 이미지 생성 여부 (기본: false)",
+                        },
+                    },
+                    required: ["originalImage", "renderedImage"],
+                },
+            },
+            // capture_figma_baseline - Playwright로 Figma 스크린샷 캡처
+            {
+                name: "d2c_capture_figma_baseline",
+                description: `Playwright로 Figma 페이지 스크린샷을 캡처하여 baseline으로 저장합니다.
+${SERVICE_IDENTIFIERS}
+
+📸 **Figma Baseline 캡처**:
+- Figma URL에 접근하여 스크린샷 캡처
+- \`./d2c-baseline/design.png\`에 저장
+- pixel 비교의 baseline으로 사용
+
+💡 **사용법**:
+1. Figma에서 비교할 프레임/컴포넌트 URL 복사
+2. 이 도구로 baseline 스크린샷 캡처
+3. \`d2c_run_visual_test\`로 구현체와 비교
+
+⚠️ **주의사항**:
+- Figma 로그인 상태 필요 (브라우저 세션)
+- Dev Mode가 활성화된 URL 권장`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        figmaUrl: {
+                            type: "string",
+                            description: "Figma 디자인 URL (프레임 또는 컴포넌트)",
+                        },
+                        selector: {
+                            type: "string",
+                            description: "캡처할 요소 선택자 (기본: 캔버스 영역)",
+                        },
+                        waitTime: {
+                            type: "number",
+                            description: "페이지 로드 대기 시간 ms (기본: 3000)",
+                        },
+                    },
+                    required: ["figmaUrl"],
+                },
+            },
+            // run_visual_test - Playwright Test Runner 시각적 비교 (Phase 1, 2)
+            {
+                name: "d2c_run_visual_test",
+                description: `Playwright Test Runner로 시각적 비교 테스트를 실행합니다. (Phase 1, 2용)
+${SERVICE_IDENTIFIERS}
+
+📊 **Playwright toHaveScreenshot() 사용**:
+- baseline 이미지와 렌더링 결과를 Playwright가 비교
+- 픽셀 단위 차이 감지 및 diff 이미지 생성
+- 성공률 자동 계산
+
+💡 **사용법**:
+1. figma-mcp로 baseline 스크린샷을 파일로 저장
+2. 렌더링할 URL 지정
+3. 이 도구로 Playwright 테스트 실행
+4. 반환된 successRate를 Phase 도구에 전달
+
+⚠️ **필수 조건**: \`npx playwright install\` 실행 필요`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        testName: {
+                            type: "string",
+                            description: "테스트 이름 (예: 'button-component')",
+                        },
+                        targetUrl: {
+                            type: "string",
+                            description: "렌더링 결과 URL (예: 'http://localhost:3000')",
+                        },
+                        baselineImagePath: {
+                            type: "string",
+                            description: "baseline 이미지 파일 경로 (PNG)",
+                        },
+                        maxDiffPixels: {
+                            type: "number",
+                            description: "허용 최대 차이 픽셀 수 (기본: 100)",
+                        },
+                        threshold: {
+                            type: "number",
+                            description: "픽셀 차이 임계값 (0-1, 기본: 0.1)",
+                        },
+                    },
+                    required: ["testName", "targetUrl", "baselineImagePath"],
+                },
+            },
+            // run_dom_golden_test - Playwright DOM golden 비교 (Phase 3)
+            {
+                name: "d2c_run_dom_golden_test",
+                description: `Playwright로 DOM golden 비교 테스트를 실행합니다. (Phase 3용)
+${SERVICE_IDENTIFIERS}
+
+📊 **DOM 구조 비교**:
+- golden DOM 파일과 렌더링 결과의 DOM 구조 비교
+- 요소, 속성, 텍스트 일치도 검사
+- 성공률 자동 계산
+
+💡 **사용법**:
+1. \`d2c_create_dom_golden\`으로 golden DOM 파일 생성
+2. 렌더링할 URL 지정
+3. 이 도구로 DOM 비교 테스트 실행
+4. 반환된 successRate를 Phase 3 도구에 전달
+
+⚠️ **필수 조건**: \`npx playwright install\` 실행 필요`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        testName: {
+                            type: "string",
+                            description: "테스트 이름 (예: 'button-component-dom')",
+                        },
+                        targetUrl: {
+                            type: "string",
+                            description: "렌더링 결과 URL (예: 'http://localhost:3000')",
+                        },
+                        goldenDomPath: {
+                            type: "string",
+                            description: "golden DOM JSON 파일 경로",
+                        },
+                        selectors: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "비교할 CSS 선택자들 (기본: ['body'])",
+                        },
+                    },
+                    required: ["testName", "targetUrl", "goldenDomPath"],
+                },
+            },
+            // create_dom_golden - DOM golden 파일 생성
+            {
+                name: "d2c_create_dom_golden",
+                description: `현재 페이지의 DOM 구조를 golden 파일로 저장합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **DOM golden 파일 생성**:
+- 지정된 URL의 DOM 구조를 JSON으로 추출
+- Phase 3 DOM 비교의 기준 파일로 사용
+
+💡 **사용법**:
+1. Figma 디자인을 렌더링한 "정답" 페이지 URL 지정
+2. 이 도구로 DOM golden 파일 생성
+3. \`d2c_run_dom_golden_test\`에서 사용`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        targetUrl: {
+                            type: "string",
+                            description: "golden으로 저장할 페이지 URL",
+                        },
+                        outputPath: {
+                            type: "string",
+                            description: "출력 JSON 파일 경로 (기본: .d2c-tests/golden-dom.json)",
+                        },
+                        selectors: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "추출할 CSS 선택자들 (기본: ['body'])",
+                        },
+                    },
+                    required: ["targetUrl"],
+                },
+            },
+            // compare_dom - DOM 구조 비교
+            {
+                name: "d2c_compare_dom",
+                description: `두 DOM 구조를 비교하여 객관적인 성공률을 계산합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **DOM 구조 비교** (Phase 3 전용):
+- 요소 존재 여부 비교
+- 속성 값 비교 (class, style, role, aria-* 등)
+- 텍스트 내용 비교
+- 누락/추가 요소 감지
+
+🔢 **성공률 계산**:
+\`성공률 = (matchedElements / totalElements) * 100\`
+
+💡 **사용법**:
+1. playwright-mcp로 원본 페이지의 DOM 스냅샷 획득
+2. playwright-mcp로 렌더링 결과의 DOM 스냅샷 획득
+3. 이 도구로 두 DOM 구조 비교
+4. 픽셀 성공률과 DOM 성공률이 다르면 HITL로 선택
+
+⚠️ **Phase 3에서 pixelmatch와 함께 사용**:
+- 픽셀 비교: 시각적 유사도
+- DOM 비교: 구조적 유사도
+- 두 값이 다르면 사용자가 기준 선택`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        expectedDom: {
+                            type: "array",
+                            description: "예상 DOM 구조 (DomElementInfo 배열)",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    tag: { type: "string" },
+                                    id: { type: "string" },
+                                    classes: { type: "array", items: { type: "string" } },
+                                    attributes: { type: "object" },
+                                    textContent: { type: "string" },
+                                    children: { type: "array" },
+                                },
+                            },
+                        },
+                        actualDom: {
+                            type: "array",
+                            description: "실제 DOM 구조 (DomElementInfo 배열)",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    tag: { type: "string" },
+                                    id: { type: "string" },
+                                    classes: { type: "array", items: { type: "string" } },
+                                    attributes: { type: "object" },
+                                    textContent: { type: "string" },
+                                    children: { type: "array" },
+                                },
+                            },
+                        },
+                    },
+                    required: ["expectedDom", "actualDom"],
+                },
+            },
             // log_step - 실시간 진행 로그
             {
                 name: "d2c_log_step",
@@ -351,10 +1341,16 @@ ${SERVICE_IDENTIFIERS}
                 description: `[Phase 1] Figma MCP로 추출한 코드의 스크린샷을 원본과 비교합니다.
 ${SERVICE_IDENTIFIERS}
 
-📊 **Phase 1 - 목표 성공률: 60% (설정 가능)**
-- 비교 방법: Playwright toHaveScreenshot() 픽셀 비교
+📊 **Phase 1 - 목표 성공률: ${PHASE_TARGETS.phase1}% (설정 가능)**
+- 비교 방법: **Playwright Test Runner** (toHaveScreenshot)
 - 수정 주체: Figma MCP (코드 재추출)
-- HITL: 매 반복마다 사용자 확인`,
+- HITL: 매 반복마다 사용자 확인
+
+⚠️ **successRate는 \`d2c_run_visual_test\` 결과를 사용하세요!**
+1. figma-mcp로 원본 스크린샷을 파일로 저장
+2. \`d2c_run_visual_test(testName, targetUrl, baselineImagePath)\` 호출
+3. Playwright가 toHaveScreenshot()으로 비교
+4. 반환된 successRate를 이 도구에 전달`,
                 inputSchema: {
                     type: "object",
                     properties: {
@@ -383,6 +1379,10 @@ ${SERVICE_IDENTIFIERS}
                             items: { type: "number" },
                             description: "이전 반복의 성공률들",
                         },
+                        rulesPath: {
+                            type: "string",
+                            description: "규칙 파일 경로 (.md) - RULES_PATHS/RULES_GLOB가 없을 때 직접 지정",
+                        },
                     },
                     required: ["successRate", "iteration"],
                 },
@@ -393,10 +1393,16 @@ ${SERVICE_IDENTIFIERS}
                 description: `[Phase 2] 이미지 diff를 분석하고 LLM이 코드를 수정합니다.
 ${SERVICE_IDENTIFIERS}
 
-📊 **Phase 2 - 목표 성공률: 70% (설정 가능)**
-- 비교 방법: Playwright toHaveScreenshot() 픽셀 비교
+📊 **Phase 2 - 목표 성공률: ${PHASE_TARGETS.phase2}% (설정 가능)**
+- 비교 방법: **Playwright Test Runner** (toHaveScreenshot + diff 분석)
 - 수정 주체: LLM (코드 직접 수정)
-- HITL: 매 반복마다 사용자 확인`,
+- HITL: 매 반복마다 사용자 확인
+
+⚠️ **successRate는 \`d2c_run_visual_test\` 결과를 사용하세요!**
+1. \`d2c_run_visual_test(testName, targetUrl, baselineImagePath)\` 호출
+2. Playwright가 생성한 diff 이미지에서 차이점 분석
+3. LLM이 해당 영역 코드 수정
+4. 재렌더링 후 다시 비교`,
                 inputSchema: {
                     type: "object",
                     properties: {
@@ -433,6 +1439,10 @@ ${SERVICE_IDENTIFIERS}
                             items: { type: "number" },
                             description: "이전 반복의 성공률들",
                         },
+                        rulesPath: {
+                            type: "string",
+                            description: "규칙 파일 경로 (.md) - RULES_PATHS/RULES_GLOB가 없을 때 직접 지정",
+                        },
                     },
                     required: ["successRate", "iteration"],
                 },
@@ -443,16 +1453,32 @@ ${SERVICE_IDENTIFIERS}
                 description: `[Phase 3] DOM 구조를 비교하고 LLM이 코드를 수정합니다.
 ${SERVICE_IDENTIFIERS}
 
-📊 **Phase 3 - 목표 성공률: 90% (설정 가능)**
-- 비교 방법: Playwright DOM 스냅샷 비교
+📊 **Phase 3 - 목표 성공률: ${PHASE_TARGETS.phase3}% (설정 가능)**
+- 비교 방법: **Playwright Browser API** (DOM golden 비교)
 - 수정 주체: LLM (코드 직접 수정)
-- HITL: 매 반복마다 사용자 확인`,
+- HITL: 매 반복마다 사용자 확인
+
+⚠️ **두 가지 성공률을 함께 전달하세요!**
+1. \`d2c_run_visual_test\`로 **픽셀 성공률** 획득
+2. \`d2c_run_dom_golden_test\`로 **DOM 성공률** 획득
+3. 두 값이 다르면 HITL에서 기준 선택
+4. LLM이 선택된 기준으로 코드 수정
+
+💡 **DOM golden 파일 생성**: \`d2c_create_dom_golden\` 먼저 실행`,
                 inputSchema: {
                     type: "object",
                     properties: {
+                        pixelSuccessRate: {
+                            type: "number",
+                            description: "픽셀 비교 성공률 (0-100, d2c_compare_screenshots 결과)",
+                        },
+                        domSuccessRate: {
+                            type: "number",
+                            description: "DOM 비교 성공률 (0-100, d2c_compare_dom 결과)",
+                        },
                         successRate: {
                             type: "number",
-                            description: "현재 성공률 (0-100, DOM 비교 결과)",
+                            description: "레거시: 단일 성공률 (pixelSuccessRate, domSuccessRate 둘 다 없을 때 사용)",
                         },
                         targetRate: {
                             type: "number",
@@ -484,8 +1510,12 @@ ${SERVICE_IDENTIFIERS}
                             items: { type: "number" },
                             description: "이전 반복의 성공률들",
                         },
+                        rulesPath: {
+                            type: "string",
+                            description: "규칙 파일 경로 (.md) - RULES_PATHS/RULES_GLOB가 없을 때 직접 지정",
+                        },
                     },
-                    required: ["successRate", "iteration"],
+                    required: ["iteration"],
                 },
             },
             // 워크플로우 전체 상태 표시
@@ -682,6 +1712,110 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
         switch (name) {
             case "d2c_preflight_check": {
+                // AI 설정 상태 확인
+                const aiSetup = await checkAISetup();
+                // 규칙 파일 상태 확인
+                const rulesStatus = await checkRulesFiles();
+                // Baseline 스크린샷 확인
+                let baselineExists = false;
+                try {
+                    await fs.access(BASELINE_PATH);
+                    baselineExists = true;
+                }
+                catch {
+                    baselineExists = false;
+                }
+                const aiSetupStatus = `
+## 🤖 AI 어시스턴트 설정
+
+### Cursor Rules
+${aiSetup.cursor.found
+                    ? `✅ 설정됨: \`${aiSetup.cursor.path}\` (${aiSetup.cursor.type})`
+                    : `❌ 미설정
+- **권장**: \`.cursor/rules/d2c-workflow.mdc\` 또는 \`.cursorrules\` 생성
+- **확인**: \`d2c_check_ai_setup\` 호출하여 추천 설정 확인`}
+
+### GitHub Copilot Instructions
+${aiSetup.copilot.found
+                    ? `✅ 설정됨: \`${aiSetup.copilot.path}\``
+                    : `❌ 미설정
+- **권장**: \`.github/copilot-instructions.md\` 생성
+- **확인**: \`d2c_check_ai_setup\` 호출하여 추천 설정 확인`}
+
+${!aiSetup.cursor.found || !aiSetup.copilot.found
+                    ? `⚠️ **AI 설정이 없습니다!** \`d2c_check_ai_setup\`을 호출하여 추천 설정을 확인하세요.`
+                    : `✅ AI 설정이 완료되어 있습니다.`}
+`;
+                // 규칙 파일 상태 섹션
+                const rulesStatusSection = `
+## 📋 디자인 규칙 파일 (필수)
+
+${rulesStatus.message}
+`;
+                // Baseline 상태 섹션
+                const baselineStatusSection = `
+## 📸 Baseline 스크린샷 ${baselineExists ? "(준비됨)" : "(필수)"}
+
+${baselineExists
+                    ? `✅ Baseline 파일 존재: \`${BASELINE_PATH}\``
+                    : `❌ Baseline 파일 없음: \`${BASELINE_PATH}\`
+
+**캡처 방법**:
+\`\`\`
+d2c_capture_figma_baseline({
+  figmaUrl: "https://www.figma.com/design/..."
+})
+\`\`\`
+또는 Figma에서 직접 PNG export 후 위 경로에 저장`}
+`;
+                // Phase 시작 가능 여부 (규칙 파일 + baseline 모두 필요)
+                const canStartPhase = rulesStatus.found && baselineExists;
+                // Phase 선택 안내 (준비 완료 시)
+                let phaseSelectionGuide;
+                if (canStartPhase) {
+                    phaseSelectionGuide = `
+---
+
+## ✋ HITL - Phase를 선택하세요
+
+사전 검사가 완료되었습니다. 시작할 Phase를 선택하세요:
+
+- **[1]** Phase 1: Figma MCP 재추출
+    └─ 디자인에서 코드를 처음 추출합니다
+- **[2]** Phase 2: LLM 이미지 diff 수정
+    └─ 픽셀 차이를 분석하여 LLM이 코드를 수정합니다
+- **[3]** Phase 3: LLM DOM 수정
+    └─ DOM 구조 차이를 분석하여 LLM이 코드를 수정합니다
+
+📌 **참고 기준** (일반적 달성 수준)
+- Phase 1: ${PHASE_TARGETS.phase1}% | Phase 2: ${PHASE_TARGETS.phase2}% | Phase 3: ${PHASE_TARGETS.phase3}%
+`;
+                }
+                else if (!baselineExists) {
+                    phaseSelectionGuide = `
+---
+
+## 🚫 Phase 시작 불가
+
+**Baseline 스크린샷이 필요합니다.**
+
+\`d2c_capture_figma_baseline\`을 먼저 실행하세요:
+\`\`\`
+d2c_capture_figma_baseline({
+  figmaUrl: "Figma URL 입력"
+})
+\`\`\`
+`;
+                }
+                else {
+                    phaseSelectionGuide = `
+---
+
+## 🚫 Phase 시작 불가
+
+규칙 파일(.md)이 필요합니다. 위 안내를 참고하여 설정해주세요.
+`;
+                }
                 return {
                     content: [
                         {
@@ -722,18 +1856,149 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 }
 \`\`\`
+${rulesStatusSection}
+${baselineStatusSection}
+${aiSetupStatus}
 
-## 선택 의존성
+---
 
-### 규칙 파일
-- **현재 설정된 경로**: ${RULES_PATHS.length > 0 ? RULES_PATHS.join(", ") : "(없음)"}
-- **Glob 패턴**: ${RULES_GLOB || "(없음)"}
-- **설정 파일**: ${CONFIG_PATH || "(없음)"}
+## 📊 사전 검사 결과
 
-## 다음 단계
-1. 위 MCP들이 설치되어 있는지 확인하세요
-2. 누락된 MCP가 있다면 설치 가이드를 따라 설치하세요
-3. 모든 준비가 완료되면 \`d2c_get_design_rules\`로 규칙을 확인하세요`,
+| 항목 | 상태 |
+|------|------|
+| 규칙 파일 | ${rulesStatus.found ? `✅ ${rulesStatus.files.length}개 발견` : "❌ 누락"} |
+| Baseline | ${baselineExists ? "✅ 준비됨" : "❌ 누락"} |
+| AI 설정 | ${aiSetup.cursor.found && aiSetup.copilot.found ? "✅ 완료" : "⚠️ 일부 누락"} |
+${phaseSelectionGuide}`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_check_ai_setup": {
+                const input = z
+                    .object({
+                    showRecommendations: z.boolean().optional().default(true),
+                })
+                    .parse(args);
+                const aiSetup = await checkAISetup();
+                let resultText = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 **AI 어시스턴트 설정 확인**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 현재 상태
+
+### Cursor Rules
+`;
+                if (aiSetup.cursor.found) {
+                    resultText += `✅ **설정됨**
+- 경로: \`${aiSetup.cursor.path}\`
+- 유형: ${aiSetup.cursor.type === "folder" ? "폴더 (.cursor/rules/)" : "파일 (.cursorrules)"}
+`;
+                }
+                else {
+                    resultText += `❌ **미설정**
+- 확인 경로: ${AI_SETUP_PATHS.cursor.rules.map(p => `\`${p}\``).join(", ")}
+`;
+                }
+                resultText += `
+### GitHub Copilot Instructions
+`;
+                if (aiSetup.copilot.found) {
+                    resultText += `✅ **설정됨**
+- 경로: \`${aiSetup.copilot.path}\`
+`;
+                }
+                else {
+                    resultText += `❌ **미설정**
+- 확인 경로: \`${AI_SETUP_PATHS.copilot.rules[0]}\`
+`;
+                }
+                // 추천 설정 표시
+                if (input.showRecommendations && (!aiSetup.cursor.found || !aiSetup.copilot.found)) {
+                    resultText += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 📝 추천 설정
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`;
+                    if (!aiSetup.cursor.found) {
+                        resultText += `
+### Cursor Rules 추천 설정
+
+**방법 1: .cursor/rules/ 폴더 사용 (권장)**
+\`\`\`bash
+mkdir -p .cursor/rules
+\`\`\`
+
+다음 내용으로 \`.cursor/rules/d2c-workflow.mdc\` 파일 생성:
+
+\`\`\`markdown
+${RECOMMENDED_CURSOR_RULES}
+\`\`\`
+
+**방법 2: .cursorrules 파일 사용**
+프로젝트 루트에 \`.cursorrules\` 파일 생성 (위와 동일한 내용)
+
+---
+`;
+                    }
+                    if (!aiSetup.copilot.found) {
+                        resultText += `
+### GitHub Copilot Instructions 추천 설정
+
+**설정 방법:**
+\`\`\`bash
+mkdir -p .github
+\`\`\`
+
+다음 내용으로 \`.github/copilot-instructions.md\` 파일 생성:
+
+\`\`\`markdown
+${RECOMMENDED_COPILOT_INSTRUCTIONS}
+\`\`\`
+
+---
+`;
+                    }
+                    resultText += `
+## 🚀 빠른 설정 명령어
+
+\`\`\`bash
+# Cursor Rules 설정
+mkdir -p .cursor/rules
+cat > .cursor/rules/d2c-workflow.mdc << 'EOF'
+${RECOMMENDED_CURSOR_RULES}EOF
+
+# Copilot Instructions 설정
+mkdir -p .github
+cat > .github/copilot-instructions.md << 'EOF'
+${RECOMMENDED_COPILOT_INSTRUCTIONS}EOF
+\`\`\`
+`;
+                }
+                // 요약
+                const allConfigured = aiSetup.cursor.found && aiSetup.copilot.found;
+                resultText += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 요약
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${allConfigured
+                    ? `✅ **모든 AI 설정이 완료되어 있습니다!**
+D2C 워크플로우를 시작할 준비가 되었습니다.`
+                    : `⚠️ **일부 AI 설정이 누락되어 있습니다.**
+
+AI 설정을 추가하면:
+- AI가 D2C 워크플로우를 더 정확하게 수행합니다
+- Phase별 도구 사용 순서를 자동으로 따릅니다
+- 코드 품질 규칙을 일관되게 적용합니다
+
+**다음 단계**: 위의 추천 설정을 프로젝트에 추가하세요.`}
+`;
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: resultText,
                         },
                     ],
                 };
@@ -842,6 +2107,632 @@ ${input.code.length} 문자`,
                     ],
                 };
             }
+            case "d2c_compare_screenshots": {
+                const input = z
+                    .object({
+                    originalImage: z.string(),
+                    renderedImage: z.string(),
+                    threshold: z.number().min(0).max(1).optional().default(0.1),
+                    generateDiff: z.boolean().optional().default(false),
+                })
+                    .parse(args);
+                try {
+                    const result = await compareImages(input.originalImage, input.renderedImage, input.threshold, input.generateDiff);
+                    const successBar = "█".repeat(Math.round(result.successRate / 10)) +
+                        "░".repeat(10 - Math.round(result.successRate / 10));
+                    // Phase 목표 달성 여부 확인
+                    const phase1Met = result.successRate >= PHASE_TARGETS.phase1;
+                    const phase2Met = result.successRate >= PHASE_TARGETS.phase2;
+                    const phase3Met = result.successRate >= PHASE_TARGETS.phase3;
+                    let responseText = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **스크린샷 비교 결과** (pixelmatch)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successBar} **${result.successRate.toFixed(2)}%** |
+| 이미지 크기 | ${result.width} × ${result.height} |
+| 전체 픽셀 | ${result.totalPixels.toLocaleString()} |
+| 차이 픽셀 | ${result.diffPixels.toLocaleString()} |
+| 임계값 | ${input.threshold} |
+
+## Phase 목표 달성 여부
+
+| Phase | 목표 | 상태 |
+|-------|------|------|
+| Phase 1 | ${PHASE_TARGETS.phase1}% | ${phase1Met ? "✅ 달성" : "❌ 미달성"} |
+| Phase 2 | ${PHASE_TARGETS.phase2}% | ${phase2Met ? "✅ 달성" : "❌ 미달성"} |
+| Phase 3 | ${PHASE_TARGETS.phase3}% | ${phase3Met ? "✅ 달성" : "❌ 미달성"} |
+
+## 다음 단계
+
+이 결과를 Phase 도구에 전달하세요:
+\`\`\`
+d2c_phase1_compare(successRate: ${result.successRate.toFixed(2)}, iteration: N)
+\`\`\`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                    // diff 이미지가 있으면 추가
+                    if (result.diffImage) {
+                        responseText += `\n\n## Diff 이미지\n(빨간색 = 차이 픽셀)\n\n[diff 이미지가 생성되었습니다. ${result.diffPixels.toLocaleString()} 픽셀의 차이가 빨간색으로 표시됩니다.]`;
+                    }
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: responseText,
+                            },
+                            // diff 이미지가 있으면 이미지로도 반환
+                            ...(result.diffImage ? [{
+                                    type: "image",
+                                    data: result.diffImage.replace("data:image/png;base64,", ""),
+                                    mimeType: "image/png",
+                                }] : []),
+                        ],
+                    };
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **스크린샷 비교 실패**
+
+## 오류
+${message}
+
+## 가능한 원인
+- 이미지 형식이 PNG가 아님
+- base64 인코딩이 잘못됨
+- 파일 경로가 존재하지 않음
+
+## 해결 방법
+1. PNG 형식의 이미지인지 확인
+2. base64 인코딩이 올바른지 확인
+3. 파일 경로가 존재하는지 확인`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
+            case "d2c_capture_figma_baseline": {
+                const input = z
+                    .object({
+                    figmaUrl: z.string(),
+                    selector: z.string().optional(),
+                    waitTime: z.number().optional().default(3000),
+                })
+                    .parse(args);
+                try {
+                    // baseline 디렉토리 생성
+                    const baselineDir = path.join(PROJECT_ROOT, "d2c-baseline");
+                    await fs.mkdir(baselineDir, { recursive: true });
+                    // Playwright 스크립트 생성
+                    const captureScript = `
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  
+  // Figma 페이지로 이동
+  await page.goto('${input.figmaUrl}', { waitUntil: 'networkidle' });
+  
+  // 추가 대기 (Figma 렌더링 시간)
+  await page.waitForTimeout(${input.waitTime});
+  
+  // 스크린샷 캡처
+  ${input.selector
+                        ? `const element = await page.locator('${input.selector}');
+  await element.screenshot({ path: '${path.join(baselineDir, "design.png")}' });`
+                        : `await page.screenshot({ path: '${path.join(baselineDir, "design.png")}', fullPage: false });`}
+  
+  await browser.close();
+  console.log('SUCCESS');
+})();
+`;
+                    const scriptPath = path.join(PLAYWRIGHT_TEST_DIR, "capture-baseline.js");
+                    await fs.mkdir(PLAYWRIGHT_TEST_DIR, { recursive: true });
+                    await fs.writeFile(scriptPath, captureScript);
+                    // 스크립트 실행
+                    const execAsync = promisify(exec);
+                    const { stdout, stderr } = await execAsync(`node "${scriptPath}"`, {
+                        cwd: PROJECT_ROOT,
+                        timeout: 60000,
+                    });
+                    if (stdout.includes("SUCCESS")) {
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `✅ **Figma Baseline 캡처 완료**
+
+## 저장 위치
+\`${BASELINE_PATH}\`
+
+## 캡처 정보
+| 항목 | 값 |
+|------|-----|
+| Figma URL | ${input.figmaUrl} |
+| 선택자 | ${input.selector || "(전체 페이지)"} |
+| 대기 시간 | ${input.waitTime}ms |
+
+## 다음 단계
+\`d2c_run_visual_test\`로 구현체와 비교하세요:
+\`\`\`
+d2c_run_visual_test({
+  testName: "my-component",
+  targetUrl: "http://localhost:3000",
+  baselineImagePath: "${BASELINE_PATH}"
+})
+\`\`\``,
+                                },
+                            ],
+                        };
+                    }
+                    else {
+                        throw new Error(stderr || "Unknown error during capture");
+                    }
+                }
+                catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **Figma Baseline 캡처 실패**
+
+## 오류
+${errorMessage}
+
+## 확인사항
+1. Playwright가 설치되어 있나요? (\`npx playwright install\`)
+2. Figma URL이 유효한가요?
+3. Figma 로그인이 필요한 경우 브라우저에서 먼저 로그인하세요
+
+## 대안
+Figma에서 직접 PNG로 export하여 다음 경로에 저장:
+\`${BASELINE_PATH}\``,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
+            case "d2c_run_visual_test": {
+                const input = z
+                    .object({
+                    testName: z.string(),
+                    targetUrl: z.string(),
+                    baselineImagePath: z.string(),
+                    maxDiffPixels: z.number().optional().default(100),
+                    threshold: z.number().min(0).max(1).optional().default(0.1),
+                })
+                    .parse(args);
+                try {
+                    // baseline 이미지 존재 확인
+                    const baselinePath = path.isAbsolute(input.baselineImagePath)
+                        ? input.baselineImagePath
+                        : path.join(PROJECT_ROOT, input.baselineImagePath);
+                    await fs.access(baselinePath);
+                    // 테스트 파일 생성
+                    const testPath = await generateVisualTest(input.testName, input.targetUrl, baselinePath, input.maxDiffPixels, input.threshold);
+                    // 테스트 실행
+                    const result = await runPlaywrightTest(testPath);
+                    const successBar = "█".repeat(Math.round(result.successRate / 10)) +
+                        "░".repeat(10 - Math.round(result.successRate / 10));
+                    const phase1Met = result.successRate >= PHASE_TARGETS.phase1;
+                    const phase2Met = result.successRate >= PHASE_TARGETS.phase2;
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Playwright 시각적 비교 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 테스트 결과
+
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successBar} **${result.successRate.toFixed(2)}%** |
+| 테스트명 | ${input.testName} |
+| 대상 URL | ${input.targetUrl} |
+| 통과/실패 | ${result.passed}/${result.failed} |
+| 허용 차이 픽셀 | ${input.maxDiffPixels} |
+${result.diffPixels !== undefined ? `| 실제 차이 픽셀 | ${result.diffPixels} |` : ""}
+
+## Phase 목표 달성 여부
+
+| Phase | 목표 | 상태 |
+|-------|------|------|
+| Phase 1 | ${PHASE_TARGETS.phase1}% | ${phase1Met ? "✅ 달성" : "❌ 미달성"} |
+| Phase 2 | ${PHASE_TARGETS.phase2}% | ${phase2Met ? "✅ 달성" : "❌ 미달성"} |
+
+## 다음 단계
+
+\`\`\`
+d2c_phase1_compare(successRate: ${result.successRate.toFixed(2)}, iteration: N)
+\`\`\`
+
+${result.diffPath ? `\n**Diff 이미지**: \`${result.diffPath}\`` : ""}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                            },
+                        ],
+                    };
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **시각적 비교 테스트 실패**
+
+## 오류
+${message}
+
+## 가능한 원인
+- baseline 이미지 파일이 존재하지 않음
+- Playwright가 설치되지 않음 (\`npx playwright install\`)
+- 대상 URL에 접근할 수 없음
+
+## 해결 방법
+1. baseline 이미지 경로 확인: \`${input.baselineImagePath}\`
+2. \`npx playwright install chromium\` 실행
+3. 대상 URL 접근 가능 여부 확인`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
+            case "d2c_run_dom_golden_test": {
+                const input = z
+                    .object({
+                    testName: z.string(),
+                    targetUrl: z.string(),
+                    goldenDomPath: z.string(),
+                    selectors: z.array(z.string()).optional().default(["body"]),
+                })
+                    .parse(args);
+                try {
+                    // golden DOM 파일 존재 확인
+                    const goldenPath = path.isAbsolute(input.goldenDomPath)
+                        ? input.goldenDomPath
+                        : path.join(PROJECT_ROOT, input.goldenDomPath);
+                    await fs.access(goldenPath);
+                    // 테스트 파일 생성
+                    const testPath = await generateDomGoldenTest(input.testName, input.targetUrl, goldenPath, input.selectors);
+                    // 테스트 실행
+                    const result = await runPlaywrightTest(testPath);
+                    const successBar = "█".repeat(Math.round(result.successRate / 10)) +
+                        "░".repeat(10 - Math.round(result.successRate / 10));
+                    const phase3Met = result.successRate >= PHASE_TARGETS.phase3;
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Playwright DOM Golden 비교 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 테스트 결과
+
+| 항목 | 값 |
+|------|-----|
+| **DOM 성공률** | ${successBar} **${result.successRate.toFixed(2)}%** |
+| 테스트명 | ${input.testName} |
+| 대상 URL | ${input.targetUrl} |
+| 비교 선택자 | ${input.selectors.join(", ")} |
+| 일치/전체 | ${result.passed}/${result.total} |
+
+## Phase 3 목표 달성 여부
+
+| Phase | 목표 | 상태 |
+|-------|------|------|
+| Phase 3 | ${PHASE_TARGETS.phase3}% | ${phase3Met ? "✅ 달성" : "❌ 미달성"} |
+
+## 다음 단계
+
+\`\`\`
+d2c_phase3_dom_compare(domSuccessRate: ${result.successRate.toFixed(2)}, iteration: N)
+\`\`\`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                            },
+                        ],
+                    };
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **DOM Golden 비교 테스트 실패**
+
+## 오류
+${message}
+
+## 가능한 원인
+- golden DOM 파일이 존재하지 않음
+- Playwright가 설치되지 않음
+- 대상 URL에 접근할 수 없음
+
+## 해결 방법
+1. \`d2c_create_dom_golden\`으로 golden 파일 먼저 생성
+2. \`npx playwright install chromium\` 실행
+3. 대상 URL 접근 가능 여부 확인`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
+            case "d2c_create_dom_golden": {
+                const input = z
+                    .object({
+                    targetUrl: z.string(),
+                    outputPath: z.string().optional().default(".d2c-tests/golden-dom.json"),
+                    selectors: z.array(z.string()).optional().default(["body"]),
+                })
+                    .parse(args);
+                try {
+                    // DOM 추출 테스트 생성 및 실행
+                    const testDir = PLAYWRIGHT_TEST_DIR;
+                    await fs.mkdir(testDir, { recursive: true });
+                    const extractScript = `
+import { chromium } from 'playwright';
+
+async function extractDom() {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const selectors = ${JSON.stringify(input.selectors)};
+  const results = [];
+  
+  for (const selector of selectors) {
+    const elements = await page.locator(selector).all();
+    
+    for (const element of elements) {
+      const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+      const id = await element.getAttribute('id');
+      const className = await element.getAttribute('class');
+      const textContent = await element.evaluate(el => el.textContent?.trim().substring(0, 100));
+      const childCount = await element.evaluate(el => el.children.length);
+      
+      results.push({
+        selector,
+        tagName,
+        id,
+        className,
+        textContent,
+        childCount
+      });
+    }
+  }
+  
+  console.log(JSON.stringify(results, null, 2));
+  
+  await browser.close();
+}
+
+extractDom().catch(console.error);
+`;
+                    const scriptPath = path.join(testDir, "extract-dom.mjs");
+                    await fs.writeFile(scriptPath, extractScript, "utf-8");
+                    // 스크립트 실행
+                    const { stdout } = await execAsync(`npx playwright test --config=playwright.config.ts extract-dom.mjs 2>/dev/null || node extract-dom.mjs`, { cwd: testDir, timeout: 30000 });
+                    // JSON 파싱
+                    const jsonMatch = stdout.match(/\[[\s\S]*\]/);
+                    if (!jsonMatch) {
+                        throw new Error("DOM 추출 결과를 파싱할 수 없습니다");
+                    }
+                    const domData = JSON.parse(jsonMatch[0]);
+                    // golden 파일 저장
+                    const outputPath = path.isAbsolute(input.outputPath)
+                        ? input.outputPath
+                        : path.join(PROJECT_ROOT, input.outputPath);
+                    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+                    await fs.writeFile(outputPath, JSON.stringify(domData, null, 2), "utf-8");
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `✅ **DOM Golden 파일 생성 완료**
+
+## 결과
+
+| 항목 | 값 |
+|------|-----|
+| 대상 URL | ${input.targetUrl} |
+| 출력 경로 | \`${input.outputPath}\` |
+| 추출 선택자 | ${input.selectors.join(", ")} |
+| 추출된 요소 수 | ${domData.length} |
+
+## 추출된 요소 미리보기
+
+\`\`\`json
+${JSON.stringify(domData.slice(0, 3), null, 2)}${domData.length > 3 ? "\n... 외 " + (domData.length - 3) + "개" : ""}
+\`\`\`
+
+## 다음 단계
+
+\`d2c_run_dom_golden_test\`에서 이 파일을 사용하세요:
+\`\`\`
+d2c_run_dom_golden_test({
+  testName: "my-component",
+  targetUrl: "http://localhost:3000",
+  goldenDomPath: "${input.outputPath}"
+})
+\`\`\``,
+                            },
+                        ],
+                    };
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **DOM Golden 파일 생성 실패**
+
+## 오류
+${message}
+
+## 가능한 원인
+- Playwright가 설치되지 않음
+- 대상 URL에 접근할 수 없음
+- 네트워크 오류
+
+## 해결 방법
+1. \`npx playwright install chromium\` 실행
+2. 대상 URL 접근 가능 여부 확인
+3. 네트워크 연결 확인`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
+            case "d2c_compare_dom": {
+                // DOM 요소 스키마 (재귀적)
+                const domElementSchema = z.lazy(() => z.object({
+                    tag: z.string(),
+                    id: z.string().optional(),
+                    classes: z.array(z.string()),
+                    attributes: z.record(z.string()),
+                    textContent: z.string().optional(),
+                    children: z.array(domElementSchema),
+                }));
+                // 기본값 처리를 위한 전처리 함수
+                const normalizeDomElement = (el) => {
+                    const obj = el;
+                    return {
+                        tag: String(obj.tag || "div"),
+                        id: obj.id ? String(obj.id) : undefined,
+                        classes: Array.isArray(obj.classes) ? obj.classes.map(String) : [],
+                        attributes: (obj.attributes && typeof obj.attributes === "object")
+                            ? Object.fromEntries(Object.entries(obj.attributes).map(([k, v]) => [k, String(v)]))
+                            : {},
+                        textContent: obj.textContent ? String(obj.textContent) : undefined,
+                        children: Array.isArray(obj.children) ? obj.children.map(normalizeDomElement) : [],
+                    };
+                };
+                const rawInput = z
+                    .object({
+                    expectedDom: z.array(z.unknown()),
+                    actualDom: z.array(z.unknown()),
+                })
+                    .parse(args);
+                const input = {
+                    expectedDom: rawInput.expectedDom.map(normalizeDomElement),
+                    actualDom: rawInput.actualDom.map(normalizeDomElement),
+                };
+                try {
+                    const result = compareDomStructures(input.expectedDom, input.actualDom);
+                    const successBar = "█".repeat(Math.round(result.successRate / 10)) +
+                        "░".repeat(10 - Math.round(result.successRate / 10));
+                    // Phase 3 목표 달성 여부 확인
+                    const phase3Met = result.successRate >= PHASE_TARGETS.phase3;
+                    // 차이점 요약
+                    const missingText = result.missingElements.length > 0
+                        ? result.missingElements.slice(0, 5).map(s => `- ❌ ${s}`).join("\n")
+                        : "없음";
+                    const extraText = result.extraElements.length > 0
+                        ? result.extraElements.slice(0, 5).map(s => `- ➕ ${s}`).join("\n")
+                        : "없음";
+                    const attrDiffText = result.attributeDiffs.length > 0
+                        ? result.attributeDiffs.slice(0, 5).map(d => `- 🔄 \`${d.selector}\` [${d.attribute}]: "${d.expected}" → "${d.actual}"`).join("\n")
+                        : "없음";
+                    const textDiffText = result.textDiffs.length > 0
+                        ? result.textDiffs.slice(0, 5).map(d => `- 📝 \`${d.selector}\`: "${d.expected}" → "${d.actual}"`).join("\n")
+                        : "없음";
+                    const responseText = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **DOM 구조 비교 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **DOM 성공률** | ${successBar} **${result.successRate.toFixed(2)}%** |
+| 전체 요소 | ${result.totalElements} |
+| 일치 요소 | ${result.matchedElements} |
+| 누락 요소 | ${result.missingElements.length} |
+| 추가 요소 | ${result.extraElements.length} |
+| 속성 차이 | ${result.attributeDiffs.length} |
+| 텍스트 차이 | ${result.textDiffs.length} |
+
+## Phase 3 목표 달성 여부
+
+| Phase | 목표 | 상태 |
+|-------|------|------|
+| Phase 3 | ${PHASE_TARGETS.phase3}% | ${phase3Met ? "✅ 달성" : "❌ 미달성"} |
+
+## 상세 차이점
+
+### 누락된 요소 (상위 5개)
+${missingText}
+
+### 추가된 요소 (상위 5개)
+${extraText}
+
+### 속성 차이 (상위 5개)
+${attrDiffText}
+
+### 텍스트 차이 (상위 5개)
+${textDiffText}
+
+## ⚠️ Phase 3 사용 시 주의
+
+픽셀 비교(\`d2c_compare_screenshots\`)와 DOM 비교 성공률이 다를 수 있습니다:
+- **픽셀 성공률**: 시각적 유사도 (색상, 레이아웃, 크기)
+- **DOM 성공률**: 구조적 유사도 (요소, 속성, 텍스트)
+
+두 값이 크게 다르면 **HITL에서 어떤 기준을 사용할지 선택**하세요.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: responseText,
+                            },
+                        ],
+                    };
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ **DOM 비교 실패**
+
+## 오류
+${message}
+
+## 가능한 원인
+- DOM 구조 형식이 잘못됨
+- 필수 필드 누락 (tag, classes 등)
+
+## 해결 방법
+1. playwright-mcp에서 올바른 형식으로 DOM 스냅샷 추출
+2. DomElementInfo 형식에 맞게 데이터 변환`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+            }
             case "d2c_log_step": {
                 const input = z
                     .object({
@@ -871,39 +2762,86 @@ ${input.message ? `   → ${input.message}` : ""}
                 const input = z
                     .object({
                     successRate: z.number(),
-                    targetRate: z.number().optional().default(60),
+                    targetRate: z.number().optional().default(PHASE_TARGETS.phase1),
                     iteration: z.number(),
                     maxIterations: z.number().optional().default(5),
                     diffDetails: z.string().optional(),
                     previousRates: z.array(z.number()).optional(),
+                    rulesPath: z.string().optional(), // 규칙 파일 경로 (없을 때 전달)
                 })
                     .parse(args);
-                const { successRate, targetRate, iteration, maxIterations, diffDetails, previousRates } = input;
+                const { successRate, targetRate, iteration, maxIterations, diffDetails, previousRates, rulesPath } = input;
+                // 규칙 파일 확인 (첫 번째 반복에서만)
+                if (iteration === 1) {
+                    const rulesStatus = await checkRulesFiles();
+                    // rulesPath가 전달되면 해당 파일 사용
+                    if (rulesPath) {
+                        const fullPath = path.isAbsolute(rulesPath) ? rulesPath : path.join(PROJECT_ROOT, rulesPath);
+                        try {
+                            await fs.access(fullPath);
+                            if (!fullPath.endsWith(".md")) {
+                                return {
+                                    content: [{
+                                            type: "text",
+                                            text: `❌ **규칙 파일은 .md 형식이어야 합니다**
+
+전달된 경로: \`${rulesPath}\`
+
+.md 확장자를 가진 파일 경로를 전달해주세요.`,
+                                        }],
+                                    isError: true,
+                                };
+                            }
+                            // 유효한 규칙 파일 - 진행
+                        }
+                        catch {
+                            return {
+                                content: [{
+                                        type: "text",
+                                        text: `❌ **규칙 파일을 찾을 수 없습니다**
+
+전달된 경로: \`${rulesPath}\`
+
+파일이 존재하는지 확인하고 올바른 경로를 전달해주세요.`,
+                                    }],
+                                isError: true,
+                            };
+                        }
+                    }
+                    else if (!rulesStatus.found) {
+                        // 규칙 파일 없음 - 경고 및 경로 요청
+                        return {
+                            content: [{
+                                    type: "text",
+                                    text: `🚫 **Phase 1 시작 불가 - 규칙 파일 누락**
+
+${rulesStatus.message}
+
+---
+
+## 📌 Phase 시작하려면
+
+규칙 파일(.md) 경로를 \`rulesPath\` 파라미터로 전달해주세요:
+
+\`\`\`
+d2c_phase1_compare({
+  successRate: ${successRate},
+  iteration: 1,
+  rulesPath: "./path/to/rules.md"  // ← 규칙 파일 경로 추가
+})
+\`\`\`
+
+또는 환경변수를 설정해주세요:
+- \`RULES_PATHS\`: 규칙 파일 경로들 (쉼표 구분)
+- \`RULES_GLOB\`: 규칙 파일 glob 패턴`,
+                                }],
+                            isError: true,
+                        };
+                    }
+                }
                 // 성공률 변화 계산
                 const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
                 const rateDiff = lastRate !== null ? successRate - lastRate : null;
-                // 판단 로직
-                let recommendation;
-                let reason;
-                if (iteration >= maxIterations) {
-                    recommendation = "user_confirm";
-                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
-                }
-                else if (rateDiff !== null && rateDiff < -10) {
-                    recommendation = "stop";
-                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
-                }
-                else if (successRate >= targetRate) {
-                    recommendation = "next_phase";
-                    reason = `Phase 1 목표(${targetRate}%) 달성! Phase 2로 진행`;
-                }
-                else {
-                    recommendation = "continue";
-                    reason = `목표(${targetRate}%) 미달 - Figma MCP로 재추출`;
-                }
-                const statusEmoji = recommendation === "continue" ? "🔄" :
-                    recommendation === "next_phase" ? "✅" :
-                        recommendation === "user_confirm" ? "✋" : "🛑";
                 const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
                 const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
                 return {
@@ -911,30 +2849,42 @@ ${input.message ? `   → ${input.message}` : ""}
                         {
                             type: "text",
                             text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **Phase 1: Figma MCP 스크린샷 비교**
+📊 **Phase 1 결과** (Figma MCP 재추출)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┌────────────────────────────────────────┐
-│ 반복: ${iteration}/${maxIterations}                              │
-├────────────────────────────────────────┤
-│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
-│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
-├────────────────────────────────────────┤
-│ 수정 주체: Figma MCP (코드 재추출)      │
-└────────────────────────────────────────┘
+## 픽셀 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **픽셀 성공률** | ${progressBar} **${successRate.toFixed(1)}%**${diffText} |
+| 반복 횟수 | ${iteration}회 |
 
 ${diffDetails ? `## 발견된 차이점\n${diffDetails}\n` : ""}
-${statusEmoji} **권장**: ${recommendation === "continue" ? "Figma MCP로 재추출 후 반복" :
-                                recommendation === "next_phase" ? "Phase 2로 진행" :
-                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
 
-**이유**: ${reason}
+## 📌 참고 기준
 
-## HITL 옵션
-- [Y] 계속 (${recommendation === "next_phase" ? "Phase 2 진행" : "반복"})
-- [N] 현재 상태로 완료
-- [M] 수동 수정 후 재비교
-- [S] 워크플로우 중단
+| Phase | 일반적 달성 수준 | 수정 방식 |
+|-------|-----------------|----------|
+| Phase 1 | ${PHASE_TARGETS.phase1}% | Figma MCP 재추출 |
+| Phase 2 | ${PHASE_TARGETS.phase2}% | LLM 이미지 diff 수정 |
+| Phase 3 | ${PHASE_TARGETS.phase3}% | LLM DOM 수정 |
+
+---
+
+## ✋ HITL - 다음 작업을 선택하세요
+
+**Phase 선택:**
+- **[1]** Phase 1: Figma MCP 재추출
+- **[2]** Phase 2: LLM 이미지 diff 수정
+- **[3]** Phase 3: LLM DOM 수정
+
+**비교 재실행:**
+- **[P]** Pixel 비교 재실행
+- **[D]** DOM 비교 재실행
+- **[B]** Baseline 재캡처 (Figma 스크린샷)
+
+**종료:**
+- **[완료]** 현재 상태로 종료
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -944,7 +2894,7 @@ ${statusEmoji} **권장**: ${recommendation === "continue" ? "Figma MCP로 재�
                 const input = z
                     .object({
                     successRate: z.number(),
-                    targetRate: z.number().optional().default(70),
+                    targetRate: z.number().optional().default(PHASE_TARGETS.phase2),
                     iteration: z.number(),
                     maxIterations: z.number().optional().default(5),
                     diffAreas: z.array(z.object({
@@ -953,32 +2903,49 @@ ${statusEmoji} **권장**: ${recommendation === "continue" ? "Figma MCP로 재�
                         severity: z.enum(["high", "medium", "low"]).optional(),
                     })).optional(),
                     previousRates: z.array(z.number()).optional(),
+                    rulesPath: z.string().optional(),
                 })
                     .parse(args);
-                const { successRate, targetRate, iteration, maxIterations, diffAreas, previousRates } = input;
+                const { successRate, targetRate, iteration, maxIterations, diffAreas, previousRates, rulesPath } = input;
+                // 규칙 파일 확인 (첫 번째 반복에서만)
+                if (iteration === 1) {
+                    const rulesStatus = await checkRulesFiles();
+                    if (rulesPath) {
+                        const fullPath = path.isAbsolute(rulesPath) ? rulesPath : path.join(PROJECT_ROOT, rulesPath);
+                        try {
+                            await fs.access(fullPath);
+                            if (!fullPath.endsWith(".md")) {
+                                return {
+                                    content: [{
+                                            type: "text",
+                                            text: `❌ **규칙 파일은 .md 형식이어야 합니다**\n\n전달된 경로: \`${rulesPath}\``,
+                                        }],
+                                    isError: true,
+                                };
+                            }
+                        }
+                        catch {
+                            return {
+                                content: [{
+                                        type: "text",
+                                        text: `❌ **규칙 파일을 찾을 수 없습니다**\n\n전달된 경로: \`${rulesPath}\``,
+                                    }],
+                                isError: true,
+                            };
+                        }
+                    }
+                    else if (!rulesStatus.found) {
+                        return {
+                            content: [{
+                                    type: "text",
+                                    text: `🚫 **Phase 2 시작 불가 - 규칙 파일 누락**\n\n${rulesStatus.message}\n\n---\n\n## 📌 Phase 시작하려면\n\n규칙 파일(.md) 경로를 \`rulesPath\` 파라미터로 전달해주세요.`,
+                                }],
+                            isError: true,
+                        };
+                    }
+                }
                 const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
                 const rateDiff = lastRate !== null ? successRate - lastRate : null;
-                let recommendation;
-                let reason;
-                if (iteration >= maxIterations) {
-                    recommendation = "user_confirm";
-                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
-                }
-                else if (rateDiff !== null && rateDiff < -10) {
-                    recommendation = "stop";
-                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
-                }
-                else if (successRate >= targetRate) {
-                    recommendation = "next_phase";
-                    reason = `Phase 2 목표(${targetRate}%) 달성! Phase 3로 진행`;
-                }
-                else {
-                    recommendation = "continue";
-                    reason = `목표(${targetRate}%) 미달 - LLM이 코드 수정`;
-                }
-                const statusEmoji = recommendation === "continue" ? "🔄" :
-                    recommendation === "next_phase" ? "✅" :
-                        recommendation === "user_confirm" ? "✋" : "🛑";
                 const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
                 const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
                 // diff 영역 표시
@@ -991,33 +2958,42 @@ ${statusEmoji} **권장**: ${recommendation === "continue" ? "Figma MCP로 재�
                         {
                             type: "text",
                             text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **Phase 2: LLM 이미지 Diff 수정**
+📊 **Phase 2 결과** (LLM 이미지 Diff 수정)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┌────────────────────────────────────────┐
-│ 반복: ${iteration}/${maxIterations}                              │
-├────────────────────────────────────────┤
-│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
-│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
-├────────────────────────────────────────┤
-│ 수정 주체: LLM (코드 직접 수정)          │
-└────────────────────────────────────────┘
+## 픽셀 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **픽셀 성공률** | ${progressBar} **${successRate.toFixed(1)}%**${diffText} |
+| 반복 횟수 | ${iteration}회 |
 
 ${diffAreasText ? `## 이미지 Diff 분석\n${diffAreasText}\n` : ""}
-${statusEmoji} **권장**: ${recommendation === "continue" ? "LLM이 코드 수정 후 반복" :
-                                recommendation === "next_phase" ? "Phase 3로 진행" :
-                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
 
-**이유**: ${reason}
+## 📌 참고 기준
 
-## LLM 수정 가이드
-${diffAreas?.filter(d => d.severity === "high").map(d => `- 우선 수정: ${d.area}의 ${d.type} 문제`).join("\n") || "- 이미지 diff 결과를 기반으로 수정"}
+| Phase | 일반적 달성 수준 | 수정 방식 |
+|-------|-----------------|----------|
+| Phase 1 | ${PHASE_TARGETS.phase1}% | Figma MCP 재추출 |
+| Phase 2 | ${PHASE_TARGETS.phase2}% | LLM 이미지 diff 수정 |
+| Phase 3 | ${PHASE_TARGETS.phase3}% | LLM DOM 수정 |
 
-## HITL 옵션
-- [Y] 계속 (${recommendation === "next_phase" ? "Phase 3 진행" : "LLM 수정 반복"})
-- [N] 현재 상태로 완료
-- [M] 수동 수정 후 재비교
-- [S] 워크플로우 중단
+---
+
+## ✋ HITL - 다음 작업을 선택하세요
+
+**Phase 선택:**
+- **[1]** Phase 1: Figma MCP 재추출
+- **[2]** Phase 2: LLM 이미지 diff 수정
+- **[3]** Phase 3: LLM DOM 수정
+
+**비교 재실행:**
+- **[P]** Pixel 비교 재실행
+- **[D]** DOM 비교 재실행
+- **[B]** Baseline 재캡처 (Figma 스크린샷)
+
+**종료:**
+- **[완료]** 현재 상태로 종료
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -1026,8 +3002,10 @@ ${diffAreas?.filter(d => d.severity === "high").map(d => `- 우선 수정: ${d.a
             case "d2c_phase3_dom_compare": {
                 const input = z
                     .object({
-                    successRate: z.number(),
-                    targetRate: z.number().optional().default(90),
+                    pixelSuccessRate: z.number().optional(),
+                    domSuccessRate: z.number().optional(),
+                    successRate: z.number().optional(), // 레거시 호환
+                    targetRate: z.number().optional().default(PHASE_TARGETS.phase3),
                     iteration: z.number(),
                     maxIterations: z.number().optional().default(5),
                     domDiffs: z.array(z.object({
@@ -1037,68 +3015,117 @@ ${diffAreas?.filter(d => d.severity === "high").map(d => `- 우선 수정: ${d.a
                         type: z.string(),
                     })).optional(),
                     previousRates: z.array(z.number()).optional(),
+                    rulesPath: z.string().optional(),
                 })
                     .parse(args);
-                const { successRate, targetRate, iteration, maxIterations, domDiffs, previousRates } = input;
-                const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
-                const rateDiff = lastRate !== null ? successRate - lastRate : null;
-                let recommendation;
-                let reason;
-                if (iteration >= maxIterations) {
-                    recommendation = "user_confirm";
-                    reason = `최대 반복 횟수(${maxIterations}회) 도달 - 사용자 결정 필요`;
+                const { targetRate, iteration, maxIterations, domDiffs, previousRates, rulesPath } = input;
+                // 규칙 파일 확인 (첫 번째 반복에서만)
+                if (iteration === 1) {
+                    const rulesStatus = await checkRulesFiles();
+                    if (rulesPath) {
+                        const fullPath = path.isAbsolute(rulesPath) ? rulesPath : path.join(PROJECT_ROOT, rulesPath);
+                        try {
+                            await fs.access(fullPath);
+                            if (!fullPath.endsWith(".md")) {
+                                return {
+                                    content: [{
+                                            type: "text",
+                                            text: `❌ **규칙 파일은 .md 형식이어야 합니다**\n\n전달된 경로: \`${rulesPath}\``,
+                                        }],
+                                    isError: true,
+                                };
+                            }
+                        }
+                        catch {
+                            return {
+                                content: [{
+                                        type: "text",
+                                        text: `❌ **규칙 파일을 찾을 수 없습니다**\n\n전달된 경로: \`${rulesPath}\``,
+                                    }],
+                                isError: true,
+                            };
+                        }
+                    }
+                    else if (!rulesStatus.found) {
+                        return {
+                            content: [{
+                                    type: "text",
+                                    text: `🚫 **Phase 3 시작 불가 - 규칙 파일 누락**\n\n${rulesStatus.message}\n\n---\n\n## 📌 Phase 시작하려면\n\n규칙 파일(.md) 경로를 \`rulesPath\` 파라미터로 전달해주세요.`,
+                                }],
+                            isError: true,
+                        };
+                    }
                 }
-                else if (rateDiff !== null && rateDiff < -10) {
-                    recommendation = "stop";
-                    reason = `성공률 하락 감지 (${rateDiff.toFixed(1)}%)`;
-                }
-                else if (successRate >= targetRate) {
-                    recommendation = "complete";
-                    reason = `Phase 3 목표(${targetRate}%) 달성! 워크플로우 완료`;
-                }
-                else {
-                    recommendation = "continue";
-                    reason = `목표(${targetRate}%) 미달 - LLM이 DOM 기반 수정`;
-                }
-                const statusEmoji = recommendation === "continue" ? "🔄" :
-                    recommendation === "complete" ? "🎉" :
-                        recommendation === "user_confirm" ? "✋" : "🛑";
-                const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
-                const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
+                // 성공률 결정 (픽셀, DOM, 레거시 순으로 확인)
+                const pixelRate = input.pixelSuccessRate;
+                const domRate = input.domSuccessRate;
+                const legacyRate = input.successRate;
+                // 두 성공률이 모두 있는 경우
+                const hasBothRates = pixelRate !== undefined && domRate !== undefined;
                 // DOM diff 표시
                 const domDiffsText = domDiffs?.length ? domDiffs.slice(0, 5).map(d => {
                     const typeIcon = d.type === "missing" ? "❌" : d.type === "extra" ? "➕" : "🔄";
                     return `${typeIcon} ${d.selector}: ${d.type}${d.expected ? ` (예상: ${d.expected})` : ""}`;
                 }).join("\n") : "";
+                // 성공률 표시 생성
+                let ratesSection;
+                if (hasBothRates) {
+                    const domBar = "█".repeat(Math.round(domRate / 10)) + "░".repeat(10 - Math.round(domRate / 10));
+                    const pixelBar = "█".repeat(Math.round(pixelRate / 10)) + "░".repeat(10 - Math.round(pixelRate / 10));
+                    ratesSection = `## 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **DOM 성공률** | ${domBar} **${domRate.toFixed(1)}%** |
+| **픽셀 성공률** | ${pixelBar} **${pixelRate.toFixed(1)}%** |
+| 반복 횟수 | ${iteration}회 |`;
+                }
+                else {
+                    const effectiveRate = pixelRate ?? domRate ?? legacyRate ?? 0;
+                    const progressBar = "█".repeat(Math.round(effectiveRate / 10)) + "░".repeat(10 - Math.round(effectiveRate / 10));
+                    ratesSection = `## 비교 결과
+
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${progressBar} **${effectiveRate.toFixed(1)}%** |
+| 반복 횟수 | ${iteration}회 |`;
+                }
                 return {
                     content: [
                         {
                             type: "text",
                             text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **Phase 3: LLM DOM 비교 수정**
+📊 **Phase 3 결과** (LLM DOM 수정)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┌────────────────────────────────────────┐
-│ 반복: ${iteration}/${maxIterations}                              │
-├────────────────────────────────────────┤
-│ 현재 성공률: ${progressBar} ${successRate.toFixed(1)}%${diffText}  │
-│ 목표 성공률: ${"█".repeat(Math.round(targetRate / 10))}${"░".repeat(10 - Math.round(targetRate / 10))} ${targetRate}%     │
-├────────────────────────────────────────┤
-│ 수정 주체: LLM (DOM 기반 수정)           │
-└────────────────────────────────────────┘
+${ratesSection}
 
 ${domDiffsText ? `## DOM 차이점 (상위 5개)\n${domDiffsText}\n` : ""}
-${statusEmoji} **권장**: ${recommendation === "continue" ? "LLM이 DOM 기반 수정 후 반복" :
-                                recommendation === "complete" ? "워크플로우 완료!" :
-                                    recommendation === "user_confirm" ? "사용자 결정 필요" : "중단 권장"}
 
-**이유**: ${reason}
+## 📌 참고 기준
 
-## HITL 옵션
-- [Y] 계속 (${recommendation === "complete" ? "완료" : "LLM 수정 반복"})
-- [N] 현재 상태로 완료
-- [M] 수동 수정 후 재비교
-- [S] 워크플로우 중단
+| Phase | 일반적 달성 수준 | 수정 방식 |
+|-------|-----------------|----------|
+| Phase 1 | ${PHASE_TARGETS.phase1}% | Figma MCP 재추출 |
+| Phase 2 | ${PHASE_TARGETS.phase2}% | LLM 이미지 diff 수정 |
+| Phase 3 | ${PHASE_TARGETS.phase3}% | LLM DOM 수정 |
+
+---
+
+## ✋ HITL - 다음 작업을 선택하세요
+
+**Phase 선택:**
+- **[1]** Phase 1: Figma MCP 재추출
+- **[2]** Phase 2: LLM 이미지 diff 수정
+- **[3]** Phase 3: LLM DOM 수정
+
+**비교 재실행:**
+- **[P]** Pixel 비교 재실행
+- **[D]** DOM 비교 재실행
+- **[B]** Baseline 재캡처 (Figma 스크린샷)
+
+**종료:**
+- **[완료]** 현재 상태로 종료
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -1610,118 +3637,93 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
                     role: "user",
                     content: {
                         type: "text",
-                        text: `## SYR D2C 3단계 워크플로우 실행
+                        text: `## SYR D2C 워크플로우 실행
 
 ### 입력 정보
 - Figma: ${figmaUrl}
 - 컴포넌트명: ${componentName}
 - 프레임워크: ${framework}
 
-### 📊 3단계 Phase 시스템
-| Phase | 목표 | 비교 방법 | 수정 주체 |
-|-------|------|----------|----------|
-| **1** | 60%  | Playwright 스크린샷 | Figma MCP 재추출 |
-| **2** | 70%  | Playwright 이미지 diff | LLM 코드 수정 |
-| **3** | 90%  | Playwright DOM 비교 | LLM 코드 수정 |
+### 📊 Phase 시스템 (동등 선택)
+
+**Phase는 순서 없이 자유롭게 선택할 수 있습니다.**
+
+| Phase | 수정 방식 | 참고 기준 |
+|-------|----------|----------|
+| **1** | Figma MCP 재추출 | ${PHASE_TARGETS.phase1}% |
+| **2** | LLM 이미지 diff 수정 | ${PHASE_TARGETS.phase2}% |
+| **3** | LLM DOM 수정 | ${PHASE_TARGETS.phase3}% |
+
+> 📌 참고 기준은 일반적 달성 수준이며, **모든 판단은 사용자가 합니다.**
 
 ---
 
-### 🔰 Step 0: OpenSpec 규칙 로드
-1. **\`d2c_load_openspec_rules\`** 호출하여 프로젝트 규칙 확인
-2. 발견된 규칙(예: figma-standard, design-rules)을 워크플로우에 적용
-3. 규칙이 없으면 기본 규칙 사용
+### Step 1: 사전 검사 + Phase 선택
+1. \`d2c_preflight_check\` 호출
+2. 규칙 파일, MCP 설치 확인
+3. ✅ 통과 시 → **HITL: Phase 선택**
+   - [1] Phase 1: Figma MCP 재추출
+   - [2] Phase 2: LLM 이미지 diff 수정
+   - [3] Phase 3: LLM DOM 수정
 
 ---
-
-### Step 1: 사전 검사
-1. \`d2c_log_step(step:1, stepName:"사전 검사", status:"start")\`
-2. \`d2c_preflight_check\` 호출
-3. figma-mcp, playwright-mcp 확인
-4. \`d2c_log_step(step:1, stepName:"사전 검사", status:"done")\`
 
 ### Step 2: Figma 디자인 가져오기
-1. \`d2c_log_step(step:2, stepName:"Figma 디자인", status:"start")\`
-2. \`figma-mcp.get_design_context\` 호출
-3. \`figma-mcp.get_screenshot\` 으로 원본 스크린샷 저장
-4. \`d2c_log_step(step:2, stepName:"Figma 디자인", status:"done")\`
+1. \`figma-mcp.get_design_context\` 호출
+2. \`figma-mcp.get_screenshot\` 으로 baseline 스크린샷 저장
 
 ---
 
-### 🔄 Phase 1: Figma MCP 추출 (목표 60%)
-1. **\`d2c_get_workflow_tasks(phase:1)\`**로 체크리스트 확인
-2. \`d2c_log_step(step:3, stepName:"Phase 1", status:"start", iteration:1)\`
-3. \`d2c_get_component_template\`로 템플릿 생성
-4. **Figma MCP로 코드 추출/수정**
-5. \`playwright-mcp.browser_navigate\`로 렌더링
-6. \`playwright-mcp.browser_screenshot\`으로 스크린샷
-7. **Playwright toHaveScreenshot()으로 비교하여 성공률 계산**
-8. **\`d2c_phase1_compare\`** 호출 (successRate, iteration 필수!)
-9. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 검증
-10. **HITL 확인**: 사용자 응답에 따라:
-    - [Y] → 60% 미달이면 반복, 달성이면 Phase 2로
-    - [M] → 수동 수정 후 재비교
-    - [N] → 현재 상태로 다음 단계
-11. \`d2c_log_step(step:3, stepName:"Phase 1", status:"done")\`
+### 🔄 Phase 실행 (선택한 Phase)
+
+#### Phase 1 선택 시 (Figma MCP 재추출)
+1. \`d2c_get_component_template\`로 템플릿 생성
+2. **Figma MCP로 코드 추출/수정**
+3. \`d2c_run_visual_test\`로 **Playwright pixel 비교**
+4. **\`d2c_phase1_compare\`** 호출 → 성공률 확인
+5. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
+
+#### Phase 2 선택 시 (LLM 이미지 diff 수정)
+1. \`d2c_run_visual_test\`로 비교 + diff 이미지 분석
+2. **diff의 빨간색 영역 기반 LLM 코드 수정**
+3. 재렌더링 후 다시 pixel 비교
+4. **\`d2c_phase2_image_diff\`** 호출 → 성공률 확인
+5. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
+
+#### Phase 3 선택 시 (LLM DOM 수정)
+1. \`d2c_create_dom_golden\`으로 golden DOM 생성 (최초 1회)
+2. \`d2c_run_dom_golden_test\`로 **DOM 비교 → DOM 성공률**
+3. DOM 차이 기반 **LLM 코드 수정**
+4. \`d2c_run_visual_test\`로 **pixel 비교 → 픽셀 성공률**
+5. **\`d2c_phase3_dom_compare\`** 호출 → **DOM + 픽셀 이중 성공률 확인**
+6. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
 
 ---
 
-### 🔄 Phase 2: LLM 이미지 Diff (목표 70%)
-1. **\`d2c_get_workflow_tasks(phase:2)\`**로 체크리스트 확인
-2. \`d2c_log_step(step:4, stepName:"Phase 2", status:"start", iteration:1)\`
-3. **Playwright 이미지 diff 분석**
-4. diff 결과 기반으로 **LLM이 코드 수정**
-5. 렌더링 후 스크린샷 비교
-6. **\`d2c_phase2_image_diff\`** 호출 (successRate, diffAreas 포함!)
-7. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 검증
-8. **HITL 확인**: 사용자 응답에 따라:
-   - [Y] → 70% 미달이면 LLM 수정 반복, 달성이면 Phase 3로
-   - [M] → 수동 수정 후 재비교
-   - [N] → 현재 상태로 다음 단계
-9. \`d2c_log_step(step:4, stepName:"Phase 2", status:"done")\`
-
----
-
-### 🔄 Phase 3: LLM DOM 비교 (목표 90%)
-1. **\`d2c_get_workflow_tasks(phase:3)\`**로 체크리스트 확인
-2. \`d2c_log_step(step:5, stepName:"Phase 3", status:"start", iteration:1)\`
-3. **Playwright DOM 스냅샷 비교**
-4. DOM 차이 기반으로 **LLM이 코드 수정**
-5. 렌더링 후 DOM 비교
-6. **\`d2c_phase3_dom_compare\`** 호출 (successRate, domDiffs 포함!)
-7. **\`d2c_validate_against_spec\`**로 OpenSpec 규칙 최종 검증
-8. **HITL 확인**: 사용자 응답에 따라:
-   - [Y] → 90% 미달이면 LLM 수정 반복, 달성이면 완료
-   - [M] → 수동 수정 후 재비교
-   - [N] → 현재 상태로 완료
-9. \`d2c_log_step(step:5, stepName:"Phase 3", status:"done")\`
-
----
-
-### Step 6: 완료
-1. \`d2c_log_step(step:6, stepName:"완료", status:"done")\`
-2. \`d2c_workflow_status\` 호출하여 최종 상태 표시
-3. 최종 코드와 파일 경로 보고
-4. 각 Phase별 성공률 변화 히스토리 요약
+### Step 3: 완료
+1. 사용자가 [완료] 선택 시 종료
+2. 최종 코드와 파일 경로 보고
+3. 성공률 히스토리 요약
 
 ---
 
 **⚠️ 중요 규칙**:
-- **워크플로우 시작 시 \`d2c_load_openspec_rules\`로 규칙 로드**
-- **각 Phase에서 \`d2c_get_workflow_tasks\`로 체크리스트 확인**
-- **코드 수정 후 \`d2c_validate_against_spec\`로 규칙 검증**
-- 매 Phase마다 **반드시 HITL 확인** (사용자에게 계속 여부 질문)
-- 모든 Phase에서 사용자가 수동 수정 가능 ([M] 옵션)
-- 성공률은 Playwright 비교 결과를 기반으로 객관적으로 측정
-- \`d2c_workflow_status\`로 언제든 전체 진행 상황 확인 가능
+- **Phase는 순서 없이 자유 선택** (1→2→3 순서 강제 없음)
+- **모든 Phase 실행 후 Playwright pixel 비교로 성공률 표시**
+- **Phase 3은 DOM 성공률 + 픽셀 성공률 둘 다 표시**
+- **참고 기준(${PHASE_TARGETS.phase1}/${PHASE_TARGETS.phase2}/${PHASE_TARGETS.phase3}%)은 참고용** - 판단은 사용자가!
+- 매 Phase 후 **HITL로 다음 Phase 선택** [1] [2] [3] [완료]
 
 ---
 
-### 📋 OpenSpec 도구 사용법
-| 도구 | 용도 | 호출 시점 |
-|------|------|----------|
-| \`d2c_load_openspec_rules\` | 프로젝트 규칙 로드 | 워크플로우 시작 시 |
-| \`d2c_get_workflow_tasks\` | Phase별 체크리스트 | 각 Phase 시작 시 |
-| \`d2c_validate_against_spec\` | 규칙 준수 검증 | 코드 수정 후 |`,
+### 📋 도구 사용법
+| 도구 | 용도 | Phase |
+|------|------|-------|
+| \`d2c_run_visual_test\` | **Playwright pixel 비교** | 1, 2, 3 |
+| \`d2c_run_dom_golden_test\` | **Playwright DOM 비교** | 3 |
+| \`d2c_phase1_compare\` | Phase 1 결과 + HITL | 1 |
+| \`d2c_phase2_image_diff\` | Phase 2 결과 + HITL | 2 |
+| \`d2c_phase3_dom_compare\` | Phase 3 결과 + HITL | 3 |`,
                     },
                 },
             ],
@@ -1793,10 +3795,11 @@ export default Component;
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("SYR D2C Workflow MCP server running on stdio (v0.4.0)");
+    console.error("SYR D2C Workflow MCP server running on stdio (v1.1.0)");
     console.error(`  Rules paths: ${RULES_PATHS.join(", ") || "(none)"}`);
     console.error(`  Rules glob: ${RULES_GLOB || "(none)"}`);
     console.error(`  OpenSpec paths: ${OPENSPEC_SEARCH_PATHS.map(p => path.join(PROJECT_ROOT, p)).join(", ")}`);
+    console.error(`  Phase targets: Phase1=${PHASE_TARGETS.phase1}%, Phase2=${PHASE_TARGETS.phase2}%, Phase3=${PHASE_TARGETS.phase3}%`);
 }
 main().catch((error) => {
     console.error("Fatal error:", error);
