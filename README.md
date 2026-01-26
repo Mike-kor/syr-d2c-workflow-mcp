@@ -4,7 +4,8 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
 
 ## 기능
 
-- 🎯 **의존성 사전 검사**: figma-mcp, playwright-mcp, baseline 스크린샷 확인
+- 🔑 **FIGMA_TOKEN 필수**: Figma API 접근을 위한 토큰 설정 필수
+- 🔗 **Figma URL 필수**: 변환할 디자인 URL 사전 설정 필수
 - 📸 **Baseline 캡처**: Playwright로 Figma 스크린샷 자동 캡처
 - 📊 **Playwright 비교**: pixel 비교 및 DOM 비교 지원
 - 🔄 **동등한 Phase 선택**: 1, 2, 3 Phase 자유 선택 (순서 강제 없음)
@@ -48,7 +49,10 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
   "servers": {
     "d2c": {
       "command": "npx",
-      "args": ["syr-d2c-workflow-mcp"]
+      "args": ["syr-d2c-workflow-mcp"],
+      "env": {
+        "FIGMA_TOKEN": "figd_YOUR_TOKEN_HERE"
+      }
     },
     "figma": {
       "command": "npx",
@@ -61,6 +65,8 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
   }
 }
 ```
+
+> ⚠️ **반드시 `FIGMA_TOKEN`을 설정해야 합니다!**
 
 ## 환경 변수
 
@@ -83,7 +89,7 @@ AI가 다음 키워드를 감지하면 이 MCP를 사용합니다:
 - "디자인 투 코드", "design to code", "figma 변환"
 - "컴포넌트로 만들어줘", "코드로 변환해줘"
 
-## Phase 워크플로우 (v1.1.0)
+## Phase 워크플로우 (v1.3.0)
 
 ### 동등한 Phase 선택
 
@@ -101,8 +107,14 @@ AI가 다음 키워드를 감지하면 이 MCP를 사용합니다:
 
 ```mermaid
 flowchart TD
-    Start[Figma 디자인] --> Preflight[사전 검사]
-    Preflight --> BaselineCheck{Baseline 있음?}
+    Start[Figma 디자인] --> Preflight[d2c_preflight_check]
+    Preflight --> TokenCheck{FIGMA_TOKEN?}
+    TokenCheck -->|No| SetToken[MCP 설정에 TOKEN 추가]
+    SetToken --> TokenCheck
+    TokenCheck -->|Yes| UrlCheck{Figma URL?}
+    UrlCheck -->|No| SetUrl[d2c_set_figma_url]
+    SetUrl --> UrlCheck
+    UrlCheck -->|Yes| BaselineCheck{Baseline 있음?}
     BaselineCheck -->|No| Capture[d2c_capture_figma_baseline]
     Capture --> BaselineCheck
     BaselineCheck -->|Yes| RulesCheck{규칙 파일?}
@@ -170,12 +182,16 @@ sequenceDiagram
 
     User->>AI: "syr로 이 Figma 변환해줘"
     
-    Note over AI,D2C: Step 1: 사전 검사
+    Note over AI,D2C: Step 1: 사전 검사 (FIGMA_TOKEN 확인)
     AI->>D2C: d2c_preflight_check()
-    D2C-->>AI: Baseline/규칙 상태 확인
+    D2C-->>AI: TOKEN ✅, URL ❌, Baseline ❌
     
-    Note over AI,PW: Step 2: Baseline 캡처
-    AI->>D2C: d2c_capture_figma_baseline(figmaUrl)
+    Note over AI,D2C: Step 2: Figma URL 설정 (필수)
+    AI->>D2C: d2c_set_figma_url(figmaUrl)
+    D2C-->>AI: URL 저장 완료
+    
+    Note over AI,PW: Step 3: Baseline 캡처
+    AI->>D2C: d2c_capture_figma_baseline()
     D2C->>PW: Figma 스크린샷 캡처
     PW-->>D2C: design.png 저장
     
@@ -233,20 +249,35 @@ sequenceDiagram
 
 ## 제공 도구 (Tools)
 
-### Baseline & 비교 도구
+### Figma 설정 도구 (필수)
 
-#### `d2c_capture_figma_baseline`
-Playwright로 Figma 페이지 스크린샷을 캡처하여 baseline으로 저장합니다.
+#### `d2c_set_figma_url`
+변환할 Figma 디자인 URL을 설정합니다. **Phase 시작 전 필수!**
 
 ```typescript
 {
-  figmaUrl: string;      // Figma 디자인 URL
+  figmaUrl: string;      // Figma 디자인 URL (프레임/컴포넌트 링크)
+}
+```
+
+> ⚠️ **이 도구를 먼저 호출해야 합니다.** URL이 설정되지 않으면 Phase를 시작할 수 없습니다.
+
+### Baseline & 비교 도구
+
+#### `d2c_capture_figma_baseline`
+`d2c_set_figma_url`로 설정된 URL에서 스크린샷을 캡처합니다.
+
+```typescript
+{
+  figmaUrl?: string;     // 선택 (미입력 시 저장된 URL 사용)
   selector?: string;     // 캡처할 요소 선택자
   waitTime?: number;     // 페이지 로드 대기 시간 (기본: 3000ms)
 }
 ```
 
 **저장 위치**: `./d2c-baseline/design.png`
+
+> ⚠️ **필수 조건**: `FIGMA_TOKEN` 환경변수 + `d2c_set_figma_url` 설정 완료
 
 #### `d2c_run_visual_test`
 Playwright Test Runner로 pixel 비교 테스트를 실행합니다.
@@ -335,10 +366,17 @@ Phase 3 결과를 표시하고 HITL 옵션을 제공합니다. (DOM + Pixel 이�
 #### `d2c_preflight_check`
 워크플로우 실행 전 필수 요소를 확인합니다.
 
-**검사 항목**:
-- 규칙 파일 (.md) 존재 여부
-- Baseline 스크린샷 (`./d2c-baseline/design.png`) 존재 여부
-- AI 설정 (Cursor rules, Copilot instructions)
+**검사 항목** (순서대로 확인):
+
+| 항목 | 필수 | 설명 |
+|------|:----:|------|
+| `FIGMA_TOKEN` | **✅** | MCP 환경변수 설정 |
+| Figma URL | **✅** | `d2c_set_figma_url`로 설정 |
+| Baseline | **✅** | `d2c_capture_figma_baseline`로 캡처 |
+| 규칙 파일 | **✅** | `.md` 형식의 디자인 규칙 |
+| AI 설정 | | Cursor rules, Copilot instructions |
+
+> ⚠️ **모든 필수 항목이 충족되어야 Phase를 시작할 수 있습니다.**
 
 #### `d2c_check_ai_setup`
 AI 어시스턴트 설정 상태를 확인하고 추천 설정을 제공합니다.
