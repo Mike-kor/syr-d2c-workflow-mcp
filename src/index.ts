@@ -27,7 +27,11 @@ const RULES_GLOB = process.env.RULES_GLOB || "";
 const CONFIG_PATH = process.env.D2C_CONFIG_PATH || "";
 const PROJECT_ROOT = process.env.D2C_PROJECT_ROOT || process.cwd();
 
-// Baseline 스크린샷 경로 (Figma에서 export 필수)
+// Figma 설정 (필수)
+const FIGMA_TOKEN = process.env.FIGMA_TOKEN || "";
+const FIGMA_URL_PATH = path.join(PROJECT_ROOT, "d2c-baseline", "figma-url.txt");
+
+// Baseline 스크린샷 경로
 const BASELINE_PATH = path.join(PROJECT_ROOT, "d2c-baseline", "design.png");
 
 // Phase별 참고 기준 (일반적 달성 수준) - 환경변수로 오버라이드 가능
@@ -777,6 +781,38 @@ interface RulesFileStatus {
   message: string;
 }
 
+// Figma URL 저장/불러오기 함수
+async function saveFigmaUrl(url: string): Promise<void> {
+  const dir = path.dirname(FIGMA_URL_PATH);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(FIGMA_URL_PATH, url, "utf-8");
+}
+
+async function loadFigmaUrl(): Promise<string | null> {
+  try {
+    const url = await fs.readFile(FIGMA_URL_PATH, "utf-8");
+    return url.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Figma 설정 상태 확인
+interface FigmaStatus {
+  tokenSet: boolean;
+  urlSet: boolean;
+  url: string | null;
+}
+
+async function checkFigmaSetup(): Promise<FigmaStatus> {
+  const url = await loadFigmaUrl();
+  return {
+    tokenSet: !!FIGMA_TOKEN,
+    urlSet: !!url,
+    url,
+  };
+}
+
 // 규칙 파일 존재 여부 확인 함수
 async function checkRulesFiles(): Promise<RulesFileStatus> {
   const status: RulesFileStatus = {
@@ -1149,7 +1185,7 @@ const DEFAULT_RULES = `
 const server = new Server(
   {
     name: "syr-d2c-workflow-mcp",
-    version: "1.2.0",
+    version: "1.3.0",
   },
   {
     capabilities: {
@@ -1316,6 +1352,32 @@ ${SERVICE_IDENTIFIERS}
         },
       },
 
+      // set_figma_url - Figma URL 설정
+      {
+        name: "d2c_set_figma_url",
+        description: `변환할 Figma 디자인 URL을 설정합니다.
+${SERVICE_IDENTIFIERS}
+
+📌 **필수**: Phase 시작 전에 반드시 설정해야 합니다.
+
+💡 **사용법**:
+1. Figma에서 변환할 프레임/컴포넌트 선택
+2. 우클릭 → "Copy link" 또는 주소창에서 URL 복사
+3. 이 도구로 URL 설정
+
+설정된 URL은 \`d2c_capture_figma_baseline\`에서 자동으로 사용됩니다.`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            figmaUrl: {
+              type: "string",
+              description: "Figma 디자인 URL (프레임 또는 컴포넌트 링크)",
+            },
+          },
+          required: ["figmaUrl"],
+        },
+      },
+
       // capture_figma_baseline - Playwright로 Figma 스크린샷 캡처
       {
         name: "d2c_capture_figma_baseline",
@@ -1323,24 +1385,24 @@ ${SERVICE_IDENTIFIERS}
 ${SERVICE_IDENTIFIERS}
 
 📸 **Figma Baseline 캡처**:
-- Figma URL에 접근하여 스크린샷 캡처
+- \`d2c_set_figma_url\`로 설정된 URL 사용 (또는 직접 입력)
 - \`./d2c-baseline/design.png\`에 저장
 - pixel 비교의 baseline으로 사용
 
 💡 **사용법**:
-1. Figma에서 비교할 프레임/컴포넌트 URL 복사
-2. 이 도구로 baseline 스크린샷 캡처
+1. \`d2c_set_figma_url\`로 URL 설정 (필수)
+2. 이 도구 호출 (URL 자동 사용)
 3. \`d2c_run_visual_test\`로 구현체와 비교
 
-⚠️ **주의사항**:
-- Figma 로그인 상태 필요 (브라우저 세션)
-- Dev Mode가 활성화된 URL 권장`,
+⚠️ **필수 조건**:
+- \`FIGMA_TOKEN\` 환경변수 설정
+- \`d2c_set_figma_url\`로 URL 설정`,
         inputSchema: {
           type: "object",
           properties: {
             figmaUrl: {
               type: "string",
-              description: "Figma 디자인 URL (프레임 또는 컴포넌트)",
+              description: "Figma URL (선택, 미입력 시 저장된 URL 사용)",
             },
             selector: {
               type: "string",
@@ -1351,7 +1413,7 @@ ${SERVICE_IDENTIFIERS}
               description: "페이지 로드 대기 시간 ms (기본: 3000)",
             },
           },
-          required: ["figmaUrl"],
+          required: [],
         },
       },
 
@@ -1971,6 +2033,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const aiSetup = await checkAISetup();
         // 규칙 파일 상태 확인
         const rulesStatus = await checkRulesFiles();
+        // Figma 설정 상태 확인
+        const figmaStatus = await checkFigmaSetup();
         
         // Baseline 스크린샷 확인
         let baselineExists = false;
@@ -2010,34 +2074,103 @@ ${!aiSetup.cursor.found || !aiSetup.copilot.found
 ${rulesStatus.message}
 `;
 
+        // Figma 상태 섹션
+        const figmaStatusSection = `
+## 🎨 Figma 설정 (필수)
+
+### FIGMA_TOKEN
+${figmaStatus.tokenSet 
+  ? `✅ 환경변수 설정됨`
+  : `❌ **환경변수 미설정**
+
+MCP 설정에 \`FIGMA_TOKEN\`을 추가하세요:
+\`\`\`json
+{
+  "servers": {
+    "d2c": {
+      "command": "npx",
+      "args": ["syr-d2c-workflow-mcp"],
+      "env": {
+        "FIGMA_TOKEN": "figd_YOUR_TOKEN_HERE"
+      }
+    }
+  }
+}
+\`\`\`
+
+💡 Figma Personal Access Token 발급: https://www.figma.com/developers/api#access-tokens`}
+
+### Figma URL
+${figmaStatus.urlSet 
+  ? `✅ 설정됨: \`${figmaStatus.url}\``
+  : `❌ **미설정** - \`d2c_set_figma_url\`로 설정하세요`}
+`;
+
         // Baseline 상태 섹션
         const baselineStatusSection = `
 ## 📸 Baseline 스크린샷 ${baselineExists ? "(준비됨)" : "(필수)"}
 
 ${baselineExists 
   ? `✅ Baseline 파일 존재: \`${BASELINE_PATH}\``
-  : `❌ Baseline 파일 없음: \`${BASELINE_PATH}\`
+  : `❌ Baseline 파일 없음`}
+`;
 
-⚠️ **Figma URL을 입력하여 Baseline을 캡처하세요!**
+        // Phase 시작 가능 여부 (Figma token + URL + 규칙 파일 + baseline 모두 필요)
+        const canStartPhase = figmaStatus.tokenSet && figmaStatus.urlSet && rulesStatus.found && baselineExists;
+
+        // Phase 선택 안내
+        let phaseSelectionGuide: string;
+        if (!figmaStatus.tokenSet) {
+          phaseSelectionGuide = `
+---
+
+## 🚫 Phase 시작 불가 - FIGMA_TOKEN 필요
+
+**MCP 설정에 \`FIGMA_TOKEN\` 환경변수를 추가하세요.**
+
+1. Figma에서 Personal Access Token 발급
+2. MCP 설정 파일에 \`FIGMA_TOKEN\` 추가
+3. MCP 서버 재시작
+`;
+        } else if (!figmaStatus.urlSet) {
+          phaseSelectionGuide = `
+---
+
+## 🚫 Phase 시작 불가 - Figma URL 필요
+
+**변환할 Figma 디자인 URL을 설정하세요.**
 
 \`\`\`
-d2c_capture_figma_baseline({
+d2c_set_figma_url({
   figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
 })
 \`\`\`
 
-💡 **Figma URL 찾는 방법**:
-1. Figma에서 변환할 프레임/컴포넌트 선택
-2. 우클릭 → "Copy link" 또는 주소창에서 URL 복사
-3. 위 명령어에 URL 입력`}
+💡 Figma에서 변환할 프레임/컴포넌트 선택 → 우클릭 → "Copy link"
 `;
+        } else if (!baselineExists) {
+          phaseSelectionGuide = `
+---
 
-        // Phase 시작 가능 여부 (규칙 파일 + baseline 모두 필요)
-        const canStartPhase = rulesStatus.found && baselineExists;
+## 🚫 Phase 시작 불가 - Baseline 필요
 
-        // Phase 선택 안내 (준비 완료 시)
-        let phaseSelectionGuide: string;
-        if (canStartPhase) {
+**Figma URL이 설정되었습니다. Baseline을 캡처하세요.**
+
+\`\`\`
+d2c_capture_figma_baseline()
+\`\`\`
+
+💡 저장된 Figma URL: \`${figmaStatus.url}\`
+`;
+        } else if (!rulesStatus.found) {
+          phaseSelectionGuide = `
+---
+
+## 🚫 Phase 시작 불가 - 규칙 파일 필요
+
+규칙 파일(.md)을 설정해주세요.
+`;
+        } else {
           phaseSelectionGuide = `
 ---
 
@@ -2054,35 +2187,8 @@ d2c_capture_figma_baseline({
 
 📌 **참고 기준** (일반적 달성 수준)
 - Phase 1: ${PHASE_TARGETS.phase1}% | Phase 2: ${PHASE_TARGETS.phase2}% | Phase 3: ${PHASE_TARGETS.phase3}%
-`;
-        } else if (!baselineExists) {
-          phaseSelectionGuide = `
----
 
-## 🚫 Phase 시작 불가 - Figma URL 필요
-
-**Baseline 스크린샷을 캡처하려면 Figma URL이 필요합니다.**
-
-### 📌 다음 단계
-
-1. Figma에서 변환할 프레임/컴포넌트의 **URL을 복사**하세요
-2. 아래 명령어를 실행하세요:
-
-\`\`\`
-d2c_capture_figma_baseline({
-  figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
-})
-\`\`\`
-
-💡 Playwright가 Figma 페이지를 열어 스크린샷을 캡처합니다.
-`;
-        } else {
-          phaseSelectionGuide = `
----
-
-## 🚫 Phase 시작 불가
-
-규칙 파일(.md)이 필요합니다. 위 안내를 참고하여 설정해주세요.
+📌 **Figma URL**: \`${figmaStatus.url}\`
 `;
         }
 
@@ -2126,6 +2232,7 @@ d2c_capture_figma_baseline({
   }
 }
 \`\`\`
+${figmaStatusSection}
 ${rulesStatusSection}
 ${baselineStatusSection}
 ${aiSetupStatus}
@@ -2136,9 +2243,11 @@ ${aiSetupStatus}
 
 | 항목 | 상태 |
 |------|------|
-| 규칙 파일 | ${rulesStatus.found ? `✅ ${rulesStatus.files.length}개 발견` : "❌ 누락"} |
-| Baseline | ${baselineExists ? "✅ 준비됨" : "❌ 누락"} |
-| AI 설정 | ${aiSetup.cursor.found && aiSetup.copilot.found ? "✅ 완료" : "⚠️ 일부 누락"} |
+| FIGMA_TOKEN | ${figmaStatus.tokenSet ? "✅ 설정됨" : "❌ **필수**"} |
+| Figma URL | ${figmaStatus.urlSet ? "✅ 설정됨" : "❌ **필수**"} |
+| Baseline | ${baselineExists ? "✅ 준비됨" : "❌ 필요"} |
+| 규칙 파일 | ${rulesStatus.found ? `✅ ${rulesStatus.files.length}개 발견` : "❌ 필요"} |
+| AI 설정 | ${aiSetup.cursor.found && aiSetup.copilot.found ? "✅ 완료" : "⚠️ 선택"} |
 ${phaseSelectionGuide}`,
             },
           ],
@@ -2500,14 +2609,112 @@ ${message}
         }
       }
 
-      case "d2c_capture_figma_baseline": {
+      case "d2c_set_figma_url": {
         const input = z
           .object({
             figmaUrl: z.string(),
+          })
+          .parse(args);
+
+        // URL 유효성 검사
+        if (!input.figmaUrl.includes("figma.com")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `❌ **유효하지 않은 Figma URL**
+
+입력된 URL: \`${input.figmaUrl}\`
+
+Figma URL은 다음 형식이어야 합니다:
+- \`https://www.figma.com/design/FILE_ID/...\`
+- \`https://www.figma.com/file/FILE_ID/...\``,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // URL 저장
+        await saveFigmaUrl(input.figmaUrl);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ **Figma URL 설정 완료**
+
+## 설정된 URL
+\`${input.figmaUrl}\`
+
+## 다음 단계
+Baseline 스크린샷을 캡처하세요:
+\`\`\`
+d2c_capture_figma_baseline()
+\`\`\``,
+            },
+          ],
+        };
+      }
+
+      case "d2c_capture_figma_baseline": {
+        const input = z
+          .object({
+            figmaUrl: z.string().optional(),
             selector: z.string().optional(),
             waitTime: z.number().optional().default(3000),
           })
           .parse(args);
+
+        // FIGMA_TOKEN 확인
+        if (!FIGMA_TOKEN) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `❌ **FIGMA_TOKEN이 설정되지 않았습니다**
+
+MCP 설정에 \`FIGMA_TOKEN\` 환경변수를 추가하세요:
+\`\`\`json
+{
+  "env": {
+    "FIGMA_TOKEN": "figd_YOUR_TOKEN_HERE"
+  }
+}
+\`\`\`
+
+💡 Figma Personal Access Token 발급:
+https://www.figma.com/developers/api#access-tokens`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Figma URL 결정 (입력값 또는 저장된 값)
+        let figmaUrl = input.figmaUrl;
+        if (!figmaUrl) {
+          figmaUrl = await loadFigmaUrl() || undefined;
+        }
+
+        if (!figmaUrl) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `❌ **Figma URL이 설정되지 않았습니다**
+
+먼저 Figma URL을 설정하세요:
+\`\`\`
+d2c_set_figma_url({
+  figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
+})
+\`\`\``,
+              },
+            ],
+            isError: true,
+          };
+        }
 
         try {
           // baseline 디렉토리 생성
@@ -2524,7 +2731,7 @@ const { chromium } = require('playwright');
   const page = await context.newPage();
   
   // Figma 페이지로 이동
-  await page.goto('${input.figmaUrl}', { waitUntil: 'networkidle' });
+  await page.goto('${figmaUrl}', { waitUntil: 'networkidle' });
   
   // 추가 대기 (Figma 렌더링 시간)
   await page.waitForTimeout(${input.waitTime});
@@ -2565,7 +2772,7 @@ const { chromium } = require('playwright');
 ## 캡처 정보
 | 항목 | 값 |
 |------|-----|
-| Figma URL | ${input.figmaUrl} |
+| Figma URL | ${figmaUrl} |
 | 선택자 | ${input.selector || "(전체 페이지)"} |
 | 대기 시간 | ${input.waitTime}ms |
 
@@ -4240,7 +4447,7 @@ export default Component;
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("SYR D2C Workflow MCP server running on stdio (v1.2.0)");
+  console.error("SYR D2C Workflow MCP server running on stdio (v1.3.0)");
   console.error(`  Rules paths: ${RULES_PATHS.join(", ") || "(none)"}`);
   console.error(`  Rules glob: ${RULES_GLOB || "(none)"}`);
   console.error(`  OpenSpec paths: ${OPENSPEC_SEARCH_PATHS.map(p => path.join(PROJECT_ROOT, p)).join(", ")}`);

@@ -24,16 +24,22 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
       "command": "npx",
       "args": ["syr-d2c-workflow-mcp"],
       "env": {
+        "FIGMA_TOKEN": "figd_YOUR_TOKEN_HERE",
         "RULES_PATHS": "./docs/standards.md,./rules/components.md",
-        "RULES_GLOB": "**/*-rules.md",
-        "D2C_PHASE1_TARGET": "60",
-        "D2C_PHASE2_TARGET": "70",
-        "D2C_PHASE3_TARGET": "90"
+        "RULES_GLOB": "**/*-rules.md"
       }
     }
   }
 }
 ```
+
+### FIGMA_TOKEN 발급 (필수)
+
+1. [Figma Personal Access Token](https://www.figma.com/developers/api#access-tokens) 페이지 접속
+2. "Generate new token" 클릭
+3. 발급된 토큰을 MCP 설정의 `FIGMA_TOKEN`에 입력
+
+> ⚠️ **FIGMA_TOKEN 없이는 워크플로우를 시작할 수 없습니다.**
 
 ### 함께 필요한 MCP들
 
@@ -58,15 +64,16 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
 
 ## 환경 변수
 
-| 변수 | 설명 | 예시 |
-|------|------|------|
-| `RULES_PATHS` | 쉼표로 구분된 규칙 파일 경로들 | `./docs/a.md,./rules/b.md` |
-| `RULES_GLOB` | 규칙 파일 glob 패턴 | `**/*-standards.md` |
-| `D2C_CONFIG_PATH` | 설정 파일 경로 | `./d2c.config.json` |
-| `D2C_PROJECT_ROOT` | 프로젝트 루트 경로 | `/path/to/project` |
-| `D2C_PHASE1_TARGET` | Phase 1 참고 기준 (기본: 60) | `50` |
-| `D2C_PHASE2_TARGET` | Phase 2 참고 기준 (기본: 70) | `65` |
-| `D2C_PHASE3_TARGET` | Phase 3 참고 기준 (기본: 90) | `85` |
+| 변수 | 설명 | 필수 | 예시 |
+|------|------|:----:|------|
+| `FIGMA_TOKEN` | Figma Personal Access Token | **✅** | `figd_xxxxx` |
+| `RULES_PATHS` | 쉼표로 구분된 규칙 파일 경로들 | | `./docs/a.md,./rules/b.md` |
+| `RULES_GLOB` | 규칙 파일 glob 패턴 | | `**/*-standards.md` |
+| `D2C_CONFIG_PATH` | 설정 파일 경로 | | `./d2c.config.json` |
+| `D2C_PROJECT_ROOT` | 프로젝트 루트 경로 | | `/path/to/project` |
+| `D2C_PHASE1_TARGET` | Phase 1 참고 기준 (기본: 60) | | `50` |
+| `D2C_PHASE2_TARGET` | Phase 2 참고 기준 (기본: 70) | | `65` |
+| `D2C_PHASE3_TARGET` | Phase 3 참고 기준 (기본: 90) | | `85` |
 
 ## 트리거 키워드
 
@@ -390,22 +397,25 @@ AI 어시스턴트 설정 상태를 확인하고 추천 설정을 제공합니�
 ## 빠른 시작
 
 ```bash
-# 1. Baseline 캡처
-d2c_capture_figma_baseline({
-  figmaUrl: "https://www.figma.com/design/..."
-})
-
-# 2. 사전 검사 + Phase 선택
+# 1. 사전 검사 (FIGMA_TOKEN 확인)
 d2c_preflight_check()
 
-# 3. Phase 실행 후 비교
+# 2. Figma URL 설정 (필수)
+d2c_set_figma_url({
+  figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
+})
+
+# 3. Baseline 캡처 (저장된 URL 자동 사용)
+d2c_capture_figma_baseline()
+
+# 4. Phase 실행 후 비교
 d2c_run_visual_test({
   testName: "my-component",
   targetUrl: "http://localhost:3000",
   baselineImagePath: "./d2c-baseline/design.png"
 })
 
-# 4. 결과 확인 + HITL
+# 5. 결과 확인 + HITL
 d2c_phase1_compare({
   successRate: 75.5,
   iteration: 1
@@ -426,6 +436,12 @@ npm run dev
 ```
 
 ## 변경 이력
+
+### v1.3.0
+- `FIGMA_TOKEN` 환경변수 **필수** 설정
+- `d2c_set_figma_url` 도구 추가 - Figma URL 사전 설정
+- Preflight 검사에서 FIGMA_TOKEN + Figma URL 확인
+- Figma URL 없으면 Phase 시작 불가
 
 ### v1.2.0
 - Figma 스크린샷 캡처를 **Playwright 전용**으로 변경 (figma-mcp 스크린샷 제거)
