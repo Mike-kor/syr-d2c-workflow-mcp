@@ -427,6 +427,11 @@ npm run dev
 
 ## 변경 이력
 
+### v1.2.0
+- Figma 스크린샷 캡처를 **Playwright 전용**으로 변경 (figma-mcp 스크린샷 제거)
+- Preflight에서 Figma URL 입력 유도 강화
+- 오류 메시지에서 "수동 export" 대안 제거
+
 ### v1.1.0
 - `d2c_capture_figma_baseline` 도구 추가 (Playwright로 Figma 스크린샷 캡처)
 - Preflight 검사에 Baseline 확인 추가

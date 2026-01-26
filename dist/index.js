@@ -920,7 +920,7 @@ const DEFAULT_RULES = `
 // MCP 서버 생성
 const server = new Server({
     name: "syr-d2c-workflow-mcp",
-    version: "1.1.0",
+    version: "1.2.0",
 }, {
     capabilities: {
         tools: {},
@@ -1051,8 +1051,8 @@ ${SERVICE_IDENTIFIERS}
 \`성공률 = (1 - diffPixels / totalPixels) * 100\`
 
 💡 **사용법**:
-1. figma-mcp로 원본 스크린샷 획득
-2. playwright-mcp로 렌더링 결과 스크린샷 획득
+1. \`d2c_capture_figma_baseline\`으로 Figma 스크린샷 캡처
+2. 구현체 렌더링 후 스크린샷 획득
 3. 이 도구로 두 이미지 비교
 4. 반환된 successRate를 Phase 도구에 전달`,
                 inputSchema: {
@@ -1128,8 +1128,8 @@ ${SERVICE_IDENTIFIERS}
 - 성공률 자동 계산
 
 💡 **사용법**:
-1. figma-mcp로 baseline 스크린샷을 파일로 저장
-2. 렌더링할 URL 지정
+1. \`d2c_capture_figma_baseline\`으로 Figma baseline 캡처
+2. 렌더링할 URL 지정 (구현체 URL)
 3. 이 도구로 Playwright 테스트 실행
 4. 반환된 successRate를 Phase 도구에 전달
 
@@ -1347,7 +1347,7 @@ ${SERVICE_IDENTIFIERS}
 - HITL: 매 반복마다 사용자 확인
 
 ⚠️ **successRate는 \`d2c_run_visual_test\` 결과를 사용하세요!**
-1. figma-mcp로 원본 스크린샷을 파일로 저장
+1. \`d2c_capture_figma_baseline\`으로 Figma baseline 캡처 (./d2c-baseline/design.png)
 2. \`d2c_run_visual_test(testName, targetUrl, baselineImagePath)\` 호출
 3. Playwright가 toHaveScreenshot()으로 비교
 4. 반환된 successRate를 이 도구에 전달`,
@@ -1760,13 +1760,18 @@ ${baselineExists
                     ? `✅ Baseline 파일 존재: \`${BASELINE_PATH}\``
                     : `❌ Baseline 파일 없음: \`${BASELINE_PATH}\`
 
-**캡처 방법**:
+⚠️ **Figma URL을 입력하여 Baseline을 캡처하세요!**
+
 \`\`\`
 d2c_capture_figma_baseline({
-  figmaUrl: "https://www.figma.com/design/..."
+  figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
 })
 \`\`\`
-또는 Figma에서 직접 PNG export 후 위 경로에 저장`}
+
+💡 **Figma URL 찾는 방법**:
+1. Figma에서 변환할 프레임/컴포넌트 선택
+2. 우클릭 → "Copy link" 또는 주소창에서 URL 복사
+3. 위 명령어에 URL 입력`}
 `;
                 // Phase 시작 가능 여부 (규칙 파일 + baseline 모두 필요)
                 const canStartPhase = rulesStatus.found && baselineExists;
@@ -1795,16 +1800,22 @@ d2c_capture_figma_baseline({
                     phaseSelectionGuide = `
 ---
 
-## 🚫 Phase 시작 불가
+## 🚫 Phase 시작 불가 - Figma URL 필요
 
-**Baseline 스크린샷이 필요합니다.**
+**Baseline 스크린샷을 캡처하려면 Figma URL이 필요합니다.**
 
-\`d2c_capture_figma_baseline\`을 먼저 실행하세요:
+### 📌 다음 단계
+
+1. Figma에서 변환할 프레임/컴포넌트의 **URL을 복사**하세요
+2. 아래 명령어를 실행하세요:
+
 \`\`\`
 d2c_capture_figma_baseline({
-  figmaUrl: "Figma URL 입력"
+  figmaUrl: "https://www.figma.com/design/YOUR_FILE_ID/..."
 })
 \`\`\`
+
+💡 Playwright가 Figma 페이지를 열어 스크린샷을 캡처합니다.
 `;
                 }
                 else {
@@ -2290,13 +2301,18 @@ d2c_run_visual_test({
 ${errorMessage}
 
 ## 확인사항
-1. Playwright가 설치되어 있나요? (\`npx playwright install\`)
-2. Figma URL이 유효한가요?
-3. Figma 로그인이 필요한 경우 브라우저에서 먼저 로그인하세요
+1. **Playwright 설치**: \`npx playwright install chromium\` 실행
+2. **Figma URL 확인**: URL이 유효한지 확인하세요
+3. **Figma 로그인**: 비공개 파일의 경우 브라우저에서 먼저 Figma 로그인 필요
+4. **대기 시간 증가**: waitTime을 5000ms 이상으로 설정해보세요
 
-## 대안
-Figma에서 직접 PNG로 export하여 다음 경로에 저장:
-\`${BASELINE_PATH}\``,
+## 다시 시도
+\`\`\`
+d2c_capture_figma_baseline({
+  figmaUrl: "YOUR_FIGMA_URL",
+  waitTime: 5000
+})
+\`\`\``,
                             },
                         ],
                         isError: true,
@@ -3668,9 +3684,9 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 
 ---
 
-### Step 2: Figma 디자인 가져오기
-1. \`figma-mcp.get_design_context\` 호출
-2. \`figma-mcp.get_screenshot\` 으로 baseline 스크린샷 저장
+### Step 2: Baseline 캡처 (Playwright)
+1. \`d2c_capture_figma_baseline({ figmaUrl: "..." })\` 호출
+2. Playwright가 Figma 페이지 스크린샷을 \`./d2c-baseline/design.png\`에 저장
 
 ---
 
@@ -3795,7 +3811,7 @@ export default Component;
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("SYR D2C Workflow MCP server running on stdio (v1.1.0)");
+    console.error("SYR D2C Workflow MCP server running on stdio (v1.2.0)");
     console.error(`  Rules paths: ${RULES_PATHS.join(", ") || "(none)"}`);
     console.error(`  Rules glob: ${RULES_GLOB || "(none)"}`);
     console.error(`  OpenSpec paths: ${OPENSPEC_SEARCH_PATHS.map(p => path.join(PROJECT_ROOT, p)).join(", ")}`);
