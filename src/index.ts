@@ -39,6 +39,21 @@ const VIEWPORT_WIDTH = parseInt(process.env.D2C_VIEWPORT_WIDTH || "360", 10);
 const VIEWPORT_HEIGHT = parseInt(process.env.D2C_VIEWPORT_HEIGHT || "800", 10);
 const DEVICE_SCALE_FACTOR = parseInt(process.env.D2C_DEVICE_SCALE_FACTOR || "2", 10);
 
+// 비교 스크린샷 저장 경로 (기본: .d2c-screenshots/ - .gitignore에 추가 권장)
+const SCREENSHOT_DIR = process.env.D2C_SCREENSHOT_DIR || path.join(PROJECT_ROOT, ".d2c-screenshots");
+
+// 타임스탬프 형식 파일명 생성 헬퍼
+function generateScreenshotFilename(phase: number, iteration: number, type: "baseline" | "code" | "compare"): string {
+  const now = new Date();
+  const timestamp = now.getFullYear().toString() +
+    (now.getMonth() + 1).toString().padStart(2, "0") +
+    now.getDate().toString().padStart(2, "0") +
+    now.getHours().toString().padStart(2, "0") +
+    now.getMinutes().toString().padStart(2, "0") +
+    now.getSeconds().toString().padStart(2, "0");
+  return `phase${phase}-v${iteration}-${type}-${timestamp}.png`;
+}
+
 // Phase별 참고 기준 (일반적 달성 수준) - 환경변수로 오버라이드 가능
 // ⚠️ 이 값은 "목표"가 아닌 "참고 기준"으로만 표시됨
 // 모든 판단은 사용자가 HITL에서 직접 수행
@@ -172,10 +187,15 @@ async function generateVisualTest(
   targetUrl: string,
   baselineImagePath: string,
   maxDiffPixels: number = 100,
-  threshold: number = 0.1
+  threshold: number = 0.1,
+  phase: number = 1,
+  iteration: number = 1
 ): Promise<string> {
   const testDir = PLAYWRIGHT_TEST_DIR;
   await fs.mkdir(testDir, { recursive: true });
+  
+  // 스크린샷 저장 디렉토리 생성
+  await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
   
   // baseline 이미지를 스냅샷 디렉토리에 복사
   const snapshotDir = path.join(testDir, `${testName}.spec.ts-snapshots`);
@@ -184,11 +204,31 @@ async function generateVisualTest(
   const baselineDest = path.join(snapshotDir, `${testName}-baseline-1-chromium-darwin.png`);
   await fs.copyFile(baselineImagePath, baselineDest);
   
+  // 스크린샷 파일명 생성
+  const baselineFilename = generateScreenshotFilename(phase, iteration, "baseline");
+  const codeFilename = generateScreenshotFilename(phase, iteration, "code");
+  const compareFilename = generateScreenshotFilename(phase, iteration, "compare");
+  
   const testContent = `import { test, expect } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
 test('${testName}', async ({ page }) => {
+  // Viewport 및 Scale 설정 (MCP 환경변수 반영)
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  
   await page.goto('${targetUrl}');
   await page.waitForLoadState('networkidle');
+  
+  // 타겟(구현체) 스크린샷 저장
+  const screenshotDir = '${SCREENSHOT_DIR}';
+  await page.screenshot({ 
+    path: path.join(screenshotDir, '${codeFilename}'),
+    scale: 'device'
+  });
+  
+  // Baseline 스크린샷 복사
+  fs.copyFileSync('${baselineImagePath}', path.join(screenshotDir, '${baselineFilename}'));
   
   await expect(page).toHaveScreenshot('${testName}-baseline.png', {
     maxDiffPixels: ${maxDiffPixels},
@@ -1432,6 +1472,7 @@ ${SERVICE_IDENTIFIERS}
 - baseline 이미지와 렌더링 결과를 Playwright가 비교
 - 픽셀 단위 차이 감지 및 diff 이미지 생성
 - 성공률 자동 계산
+- **스크린샷 저장**: \`D2C_SCREENSHOT_DIR\` 경로에 자동 저장
 
 💡 **사용법**:
 1. \`d2c_capture_figma_baseline\`으로 Figma baseline 캡처
@@ -1462,6 +1503,14 @@ ${SERVICE_IDENTIFIERS}
             threshold: {
               type: "number",
               description: "픽셀 차이 임계값 (0-1, 기본: 0.1)",
+            },
+            phase: {
+              type: "number",
+              description: "현재 Phase 번호 (1-3, 기본: 1) - 스크린샷 파일명에 사용",
+            },
+            iteration: {
+              type: "number",
+              description: "현재 반복 횟수 (기본: 1) - 스크린샷 파일명에 사용",
             },
           },
           required: ["testName", "targetUrl", "baselineImagePath"],
@@ -2744,11 +2793,11 @@ const { chromium } = require('playwright');
   // 추가 대기 (Figma 렌더링 시간)
   await page.waitForTimeout(${input.waitTime});
   
-  // 스크린샷 캡처
+  // 스크린샷 캡처 (scale: 'device'로 실제 해상도 ${VIEWPORT_WIDTH * DEVICE_SCALE_FACTOR}x${VIEWPORT_HEIGHT * DEVICE_SCALE_FACTOR})
   ${input.selector 
     ? `const element = await page.locator('${input.selector}');
-  await element.screenshot({ path: '${path.join(baselineDir, "design.png")}' });`
-    : `await page.screenshot({ path: '${path.join(baselineDir, "design.png")}', fullPage: false });`
+  await element.screenshot({ path: '${path.join(baselineDir, "design.png")}', scale: 'device' });`
+    : `await page.screenshot({ path: '${path.join(baselineDir, "design.png")}', fullPage: false, scale: 'device' });`
   }
   
   await browser.close();
@@ -2782,8 +2831,9 @@ const { chromium } = require('playwright');
 |------|-----|
 | Figma URL | ${figmaUrl} |
 | 선택자 | ${input.selector || "(전체 페이지)"} |
-| Viewport | ${VIEWPORT_WIDTH} x ${VIEWPORT_HEIGHT} |
+| Viewport (CSS) | ${VIEWPORT_WIDTH} x ${VIEWPORT_HEIGHT} |
 | Device Scale | ${DEVICE_SCALE_FACTOR}x |
+| **실제 해상도** | **${VIEWPORT_WIDTH * DEVICE_SCALE_FACTOR} x ${VIEWPORT_HEIGHT * DEVICE_SCALE_FACTOR}** |
 | 대기 시간 | ${input.waitTime}ms |
 
 ## 다음 단계
@@ -2840,6 +2890,8 @@ d2c_capture_figma_baseline({
             baselineImagePath: z.string(),
             maxDiffPixels: z.number().optional().default(100),
             threshold: z.number().min(0).max(1).optional().default(0.1),
+            phase: z.number().min(1).max(3).optional().default(1),
+            iteration: z.number().min(1).optional().default(1),
           })
           .parse(args);
 
@@ -2851,13 +2903,15 @@ d2c_capture_figma_baseline({
           
           await fs.access(baselinePath);
 
-          // 테스트 파일 생성
+          // 테스트 파일 생성 (phase, iteration 전달)
           const testPath = await generateVisualTest(
             input.testName,
             input.targetUrl,
             baselinePath,
             input.maxDiffPixels,
-            input.threshold
+            input.threshold,
+            input.phase,
+            input.iteration
           );
 
           // 테스트 실행
@@ -2868,6 +2922,15 @@ d2c_capture_figma_baseline({
 
           const phase1Met = result.successRate >= PHASE_TARGETS.phase1;
           const phase2Met = result.successRate >= PHASE_TARGETS.phase2;
+          
+          // 저장된 스크린샷 정보
+          const screenshotInfo = `
+
+## 📸 저장된 스크린샷
+| 타입 | 경로 |
+|------|------|
+| Baseline | \`${SCREENSHOT_DIR}/phase${input.phase}-v${input.iteration}-baseline-*.png\` |
+| Code | \`${SCREENSHOT_DIR}/phase${input.phase}-v${input.iteration}-code-*.png\` |`;
 
           return {
             content: [
@@ -2884,9 +2947,11 @@ d2c_capture_figma_baseline({
 | **성공률** | ${successBar} **${result.successRate.toFixed(2)}%** |
 | 테스트명 | ${input.testName} |
 | 대상 URL | ${input.targetUrl} |
+| Phase / Iteration | ${input.phase} / ${input.iteration} |
 | 통과/실패 | ${result.passed}/${result.failed} |
 | 허용 차이 픽셀 | ${input.maxDiffPixels} |
 ${result.diffPixels !== undefined ? `| 실제 차이 픽셀 | ${result.diffPixels} |` : ""}
+${screenshotInfo}
 
 ## Phase 목표 달성 여부
 
@@ -2898,7 +2963,7 @@ ${result.diffPixels !== undefined ? `| 실제 차이 픽셀 | ${result.diffPixel
 ## 다음 단계
 
 \`\`\`
-d2c_phase1_compare(successRate: ${result.successRate.toFixed(2)}, iteration: N)
+d2c_phase${input.phase}_compare(successRate: ${result.successRate.toFixed(2)}, iteration: ${input.iteration})
 \`\`\`
 
 ${result.diffPath ? `\n**Diff 이미지**: \`${result.diffPath}\`` : ""}
