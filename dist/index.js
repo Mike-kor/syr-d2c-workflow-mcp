@@ -21,6 +21,10 @@ const FIGMA_TOKEN = process.env.FIGMA_TOKEN || "";
 const FIGMA_URL_PATH = path.join(PROJECT_ROOT, "d2c-baseline", "figma-url.txt");
 // Baseline 스크린샷 경로
 const BASELINE_PATH = path.join(PROJECT_ROOT, "d2c-baseline", "design.png");
+// Playwright 스크린샷 설정
+const VIEWPORT_WIDTH = parseInt(process.env.D2C_VIEWPORT_WIDTH || "360", 10);
+const VIEWPORT_HEIGHT = parseInt(process.env.D2C_VIEWPORT_HEIGHT || "800", 10);
+const DEVICE_SCALE_FACTOR = parseInt(process.env.D2C_DEVICE_SCALE_FACTOR || "2", 10);
 // Phase별 참고 기준 (일반적 달성 수준) - 환경변수로 오버라이드 가능
 // ⚠️ 이 값은 "목표"가 아닌 "참고 기준"으로만 표시됨
 // 모든 판단은 사용자가 HITL에서 직접 수행
@@ -2417,7 +2421,10 @@ const { chromium } = require('playwright');
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: { width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} },
+    deviceScaleFactor: ${DEVICE_SCALE_FACTOR},
+  });
   const page = await context.newPage();
   
   // Figma 페이지로 이동
@@ -2460,6 +2467,8 @@ const { chromium } = require('playwright');
 |------|-----|
 | Figma URL | ${figmaUrl} |
 | 선택자 | ${input.selector || "(전체 페이지)"} |
+| Viewport | ${VIEWPORT_WIDTH} x ${VIEWPORT_HEIGHT} |
+| Device Scale | ${DEVICE_SCALE_FACTOR}x |
 | 대기 시간 | ${input.waitTime}ms |
 
 ## 다음 단계

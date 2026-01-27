@@ -26,6 +26,9 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
       "args": ["syr-d2c-workflow-mcp"],
       "env": {
         "FIGMA_TOKEN": "figd_YOUR_TOKEN_HERE",
+        "D2C_VIEWPORT_WIDTH": "360",
+        "D2C_VIEWPORT_HEIGHT": "800",
+        "D2C_DEVICE_SCALE_FACTOR": "2",
         "RULES_PATHS": "./docs/standards.md,./rules/components.md",
         "RULES_GLOB": "**/*-rules.md"
       }
@@ -70,16 +73,29 @@ Figma 디자인을 프로덕션 레디 컴포넌트로 변환하는 워크플로
 
 ## 환경 변수
 
-| 변수 | 설명 | 필수 | 예시 |
-|------|------|:----:|------|
-| `FIGMA_TOKEN` | Figma Personal Access Token | **✅** | `figd_xxxxx` |
-| `RULES_PATHS` | 쉼표로 구분된 규칙 파일 경로들 | | `./docs/a.md,./rules/b.md` |
-| `RULES_GLOB` | 규칙 파일 glob 패턴 | | `**/*-standards.md` |
-| `D2C_CONFIG_PATH` | 설정 파일 경로 | | `./d2c.config.json` |
-| `D2C_PROJECT_ROOT` | 프로젝트 루트 경로 | | `/path/to/project` |
-| `D2C_PHASE1_TARGET` | Phase 1 참고 기준 (기본: 60) | | `50` |
-| `D2C_PHASE2_TARGET` | Phase 2 참고 기준 (기본: 70) | | `65` |
-| `D2C_PHASE3_TARGET` | Phase 3 참고 기준 (기본: 90) | | `85` |
+| 변수 | 설명 | 필수 | 기본값 |
+|------|------|:----:|--------|
+| `FIGMA_TOKEN` | Figma Personal Access Token | **✅** | - |
+| `D2C_VIEWPORT_WIDTH` | 스크린샷 viewport 너비 | | `360` |
+| `D2C_VIEWPORT_HEIGHT` | 스크린샷 viewport 높이 | | `800` |
+| `D2C_DEVICE_SCALE_FACTOR` | 디바이스 배율 (레티나: 2) | | `2` |
+| `RULES_PATHS` | 쉼표로 구분된 규칙 파일 경로들 | | - |
+| `RULES_GLOB` | 규칙 파일 glob 패턴 | | - |
+| `D2C_CONFIG_PATH` | 설정 파일 경로 | | - |
+| `D2C_PROJECT_ROOT` | 프로젝트 루트 경로 | | `cwd()` |
+| `D2C_PHASE1_TARGET` | Phase 1 참고 기준 | | `60` |
+| `D2C_PHASE2_TARGET` | Phase 2 참고 기준 | | `70` |
+| `D2C_PHASE3_TARGET` | Phase 3 참고 기준 | | `90` |
+
+### Viewport 설정 가이드
+
+| 디바이스 | WIDTH | HEIGHT | SCALE |
+|----------|-------|--------|-------|
+| 모바일 (기본) | 360 | 800 | 2 |
+| 태블릿 | 768 | 1024 | 2 |
+| 데스크탑 | 1280 | 720 | 1 |
+
+> ⚠️ **Figma 디자인 크기와 일치시켜야 정확한 비교가 가능합니다.**
 
 ## 트리거 키워드
 
@@ -276,6 +292,13 @@ sequenceDiagram
 ```
 
 **저장 위치**: `./d2c-baseline/design.png`
+
+**스크린샷 설정** (환경변수로 조정):
+| 설정 | 환경변수 | 기본값 |
+|------|----------|--------|
+| Viewport 너비 | `D2C_VIEWPORT_WIDTH` | 360 |
+| Viewport 높이 | `D2C_VIEWPORT_HEIGHT` | 800 |
+| 디바이스 배율 | `D2C_DEVICE_SCALE_FACTOR` | 2 |
 
 > ⚠️ **필수 조건**: `FIGMA_TOKEN` 환경변수 + `d2c_set_figma_url` 설정 완료
 
@@ -474,6 +497,14 @@ npm run dev
 ```
 
 ## 변경 이력
+
+### v1.4.0
+- 스크린샷 Viewport/Scale 설정 추가
+  - `D2C_VIEWPORT_WIDTH` (기본: 360)
+  - `D2C_VIEWPORT_HEIGHT` (기본: 800)
+  - `D2C_DEVICE_SCALE_FACTOR` (기본: 2)
+- Playwright 캡처 시 설정 적용
+- 캡처 완료 메시지에 설정값 표시
 
 ### v1.3.0
 - `FIGMA_TOKEN` 환경변수 **필수** 설정
