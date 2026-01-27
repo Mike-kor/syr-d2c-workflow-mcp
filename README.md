@@ -523,6 +523,12 @@ npm run dev
 
 ## 변경 이력
 
+### v1.6.0
+- Phase 결과에 **OpenSpec 규칙 자동 표시**
+  - 매 Phase 실행 시 OpenSpec 규칙을 자동 로드
+  - 성공률 향상 가이드로 규칙 요약 표시
+  - Phase 1, 2, 3 모두 적용
+
 ### v1.5.0
 - 비교 스크린샷 자동 저장 기능 추가
   - `D2C_SCREENSHOT_DIR` 환경변수 (기본: `.d2c-screenshots`)

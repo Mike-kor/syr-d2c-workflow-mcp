@@ -3498,6 +3498,23 @@ d2c_phase1_compare({
         const diffText = rateDiff !== null ? ` (${rateDiff >= 0 ? "+" : ""}${rateDiff.toFixed(1)}%)` : "";
         const progressBar = "█".repeat(Math.round(successRate / 10)) + "░".repeat(10 - Math.round(successRate / 10));
 
+        // OpenSpec 규칙 로드 (매번 확인)
+        const openSpecRules = await loadOpenSpecRules();
+        let openSpecSection = "";
+        if (openSpecRules.length > 0) {
+          const rulesSummary = openSpecRules.map(rule => {
+            const keyReqs = rule.requirements.slice(0, 3).map(r => `  - ${r.name}`).join("\n");
+            return `### ${rule.specName}\n${keyReqs}${rule.requirements.length > 3 ? `\n  - ... 외 ${rule.requirements.length - 3}개` : ""}`;
+          }).join("\n\n");
+          openSpecSection = `
+## 📋 OpenSpec 규칙 (성공률 향상 가이드)
+
+${rulesSummary}
+
+> 💡 **위 규칙을 참고하여 코드를 수정하면 성공률을 높일 수 있습니다.**
+`;
+        }
+
         return {
           content: [
             {
@@ -3514,7 +3531,7 @@ d2c_phase1_compare({
 | 반복 횟수 | ${iteration}회 |
 
 ${diffDetails ? `## 발견된 차이점\n${diffDetails}\n` : ""}
-
+${openSpecSection}
 ## 📌 참고 기준
 
 | Phase | 일반적 달성 수준 | 수정 방식 |
@@ -3613,6 +3630,23 @@ ${diffDetails ? `## 발견된 차이점\n${diffDetails}\n` : ""}
           return `${severityIcon} ${d.area}: ${d.type}`;
         }).join("\n") : "";
 
+        // OpenSpec 규칙 로드 (매번 확인)
+        const openSpecRules2 = await loadOpenSpecRules();
+        let openSpecSection2 = "";
+        if (openSpecRules2.length > 0) {
+          const rulesSummary = openSpecRules2.map(rule => {
+            const keyReqs = rule.requirements.slice(0, 3).map(r => `  - ${r.name}`).join("\n");
+            return `### ${rule.specName}\n${keyReqs}${rule.requirements.length > 3 ? `\n  - ... 외 ${rule.requirements.length - 3}개` : ""}`;
+          }).join("\n\n");
+          openSpecSection2 = `
+## 📋 OpenSpec 규칙 (성공률 향상 가이드)
+
+${rulesSummary}
+
+> 💡 **위 규칙을 참고하여 코드를 수정하면 성공률을 높일 수 있습니다.**
+`;
+        }
+
         return {
           content: [
             {
@@ -3629,7 +3663,7 @@ ${diffDetails ? `## 발견된 차이점\n${diffDetails}\n` : ""}
 | 반복 횟수 | ${iteration}회 |
 
 ${diffAreasText ? `## 이미지 Diff 분석\n${diffAreasText}\n` : ""}
-
+${openSpecSection2}
 ## 📌 참고 기준
 
 | Phase | 일반적 달성 수준 | 수정 방식 |
@@ -3756,6 +3790,23 @@ ${diffAreasText ? `## 이미지 Diff 분석\n${diffAreasText}\n` : ""}
 | 반복 횟수 | ${iteration}회 |`;
         }
 
+        // OpenSpec 규칙 로드 (매번 확인)
+        const openSpecRules3 = await loadOpenSpecRules();
+        let openSpecSection3 = "";
+        if (openSpecRules3.length > 0) {
+          const rulesSummary = openSpecRules3.map(rule => {
+            const keyReqs = rule.requirements.slice(0, 3).map(r => `  - ${r.name}`).join("\n");
+            return `### ${rule.specName}\n${keyReqs}${rule.requirements.length > 3 ? `\n  - ... 외 ${rule.requirements.length - 3}개` : ""}`;
+          }).join("\n\n");
+          openSpecSection3 = `
+## 📋 OpenSpec 규칙 (성공률 향상 가이드)
+
+${rulesSummary}
+
+> 💡 **위 규칙을 참고하여 코드를 수정하면 성공률을 높일 수 있습니다.**
+`;
+        }
+
         return {
           content: [
             {
@@ -3767,7 +3818,7 @@ ${diffAreasText ? `## 이미지 Diff 분석\n${diffAreasText}\n` : ""}
 ${ratesSection}
 
 ${domDiffsText ? `## DOM 차이점 (상위 5개)\n${domDiffsText}\n` : ""}
-
+${openSpecSection3}
 ## 📌 참고 기준
 
 | Phase | 일반적 달성 수준 | 수정 방식 |
