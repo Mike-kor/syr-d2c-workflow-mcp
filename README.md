@@ -130,17 +130,24 @@ AI가 다음 키워드를 감지하면 이 MCP를 사용합니다:
 - "디자인 투 코드", "design to code", "figma 변환"
 - "컴포넌트로 만들어줘", "코드로 변환해줘"
 
-## Phase 워크플로우 (v1.3.0)
+## Phase 워크플로우 (v1.8.0)
 
-### 동등한 Phase 선택
+### 핵심 규칙
 
-**Phase는 순서 없이 자유롭게 선택할 수 있습니다.**
+1. **첫 진입 시 Phase 1 필수**: 세션에서 Phase 1 이력이 없으면 자동으로 Phase 1 실행 안내
+2. **HITL 루프 강제**: `[완료]` 선택 전까지 HITL이 계속됨
+3. **세션 관리**: `d2c_complete_workflow`로 명시적 종료 필요
 
-| Phase | 수정 방식 | 참고 기준 |
-|-------|----------|----------|
-| **1** | Figma MCP 재추출 | 60% |
-| **2** | LLM 이미지 diff 수정 | 70% |
-| **3** | LLM DOM 수정 | 90% |
+### Phase 선택
+
+**Phase는 순서 없이 자유롭게 선택할 수 있습니다.** (단, 첫 진입 시 Phase 1 필수)
+
+| Phase | 수정 방식 | 참고 기준 | 보조 검증 도구 |
+|-------|----------|----------|---------------|
+| **1** | Figma MCP 재추출 | 60% | `d2c_compare_bounding_box`, `d2c_verify_fonts` |
+| **2** | LLM 이미지 diff 수정 | 70% | `d2c_compare_styles`, `d2c_verify_interactive_states` |
+| **3** | LLM DOM 수정 | 90% | `d2c_compare_accessibility` |
+| **전체** | 반응형 테스트 | - | `d2c_test_responsive` |
 
 > 📌 참고 기준은 일반적 달성 수준이며, **모든 판단은 사용자가 합니다.**
 
@@ -161,15 +168,18 @@ flowchart TD
     BaselineCheck -->|Yes| RulesCheck{규칙 파일?}
     RulesCheck -->|No| SetRules[규칙 파일 설정]
     SetRules --> RulesCheck
-    RulesCheck -->|Yes| PhaseSelect[HITL: Phase 선택]
+    RulesCheck -->|Yes| SessionCheck{Phase 1 이력?}
+    SessionCheck -->|No| AutoPhase1[Phase 1 자동 실행]
+    SessionCheck -->|Yes| PhaseSelect[HITL: Phase 선택]
     
     subgraph Phase1 [Phase 1: Figma MCP 재추출 - 참고 60%]
         P1_Extract[Figma MCP로 코드 추출]
         P1_Render[Playwright 렌더링]
         P1_Compare[d2c_run_visual_test]
+        P1_Assist[보조: bounding_box, fonts]
         P1_Result[d2c_phase1_compare]
         
-        P1_Extract --> P1_Render --> P1_Compare --> P1_Result
+        P1_Extract --> P1_Render --> P1_Compare --> P1_Assist --> P1_Result
     end
     
     subgraph Phase2 [Phase 2: LLM 이미지 Diff - 참고 70%]
@@ -177,9 +187,10 @@ flowchart TD
         P2_LLM[LLM 코드 수정]
         P2_Render[Playwright 렌더링]
         P2_Compare[d2c_run_visual_test]
+        P2_Assist[보조: styles, interactive]
         P2_Result[d2c_phase2_image_diff]
         
-        P2_Diff --> P2_LLM --> P2_Render --> P2_Compare --> P2_Result
+        P2_Diff --> P2_LLM --> P2_Render --> P2_Compare --> P2_Assist --> P2_Result
     end
     
     subgraph Phase3 [Phase 3: LLM DOM 수정 - 참고 90%]
@@ -188,15 +199,16 @@ flowchart TD
         P3_Render[Playwright 렌더링]
         P3_DOMTest[d2c_run_dom_golden_test]
         P3_PixelTest[d2c_run_visual_test]
+        P3_Assist[보조: accessibility]
         P3_Result[d2c_phase3_dom_compare]
         
-        P3_DOM --> P3_LLM --> P3_Render --> P3_DOMTest --> P3_PixelTest --> P3_Result
+        P3_DOM --> P3_LLM --> P3_Render --> P3_DOMTest --> P3_PixelTest --> P3_Assist --> P3_Result
     end
     
+    AutoPhase1 --> Phase1
     PhaseSelect -->|1| Phase1
     PhaseSelect -->|2| Phase2
     PhaseSelect -->|3| Phase3
-    PhaseSelect -->|완료| Done[종료]
     
     P1_Result --> HITL[HITL 옵션]
     P2_Result --> HITL
@@ -206,10 +218,13 @@ flowchart TD
     HITL -->|P| RePixel[Pixel 비교 재실행]
     HITL -->|D| ReDOM[DOM 비교 재실행]
     HITL -->|B| Capture
-    HITL -->|완료| Done
+    HITL -->|R| Responsive[d2c_test_responsive]
+    HITL -->|완료| Complete[d2c_complete_workflow]
     
     RePixel --> HITL
     ReDOM --> HITL
+    Responsive --> HITL
+    Complete --> Done[세션 요약 + 종료]
 ```
 
 ### 시퀀스 다이어그램
@@ -236,21 +251,21 @@ sequenceDiagram
     D2C->>PW: Figma 스크린샷 캡처
     PW-->>D2C: design.png 저장
     
-    Note over AI,D2C: HITL: Phase 선택
-    AI->>User: [1] [2] [3] [완료]?
-    User-->>AI: 1 선택
+    Note over AI,D2C: Step 4: Phase 1 자동 실행 (첫 진입)
     
     rect rgb(255, 220, 220)
         Note over AI,PW: Phase 1: Figma MCP 재추출
         AI->>AI: Figma MCP로 코드 추출
         AI->>D2C: d2c_run_visual_test(baseline, target)
         D2C->>PW: Pixel 비교
-        PW-->>D2C: 성공률 75%
-        AI->>D2C: d2c_phase1_compare(75%, iteration:1)
+        PW-->>D2C: 성공률 65%
+        AI->>D2C: d2c_compare_bounding_box() [보조]
+        AI->>D2C: d2c_verify_fonts() [보조]
+        AI->>D2C: d2c_phase1_compare(65%, iteration:1)
         D2C-->>AI: HITL 옵션 표시
     end
     
-    AI->>User: [1] [2] [3] [P] [D] [B] [완료]?
+    AI->>User: [1] [2] [3] [P] [D] [B] [R] [완료]?
     User-->>AI: 2 선택
     
     rect rgb(220, 255, 220)
@@ -258,14 +273,48 @@ sequenceDiagram
         AI->>AI: Diff 분석 → LLM 코드 수정
         AI->>D2C: d2c_run_visual_test(baseline, target)
         D2C->>PW: Pixel 비교
-        PW-->>D2C: 성공률 85%
-        AI->>D2C: d2c_phase2_image_diff(85%, iteration:1)
+        PW-->>D2C: 성공률 78%
+        AI->>D2C: d2c_compare_styles() [보조]
+        AI->>D2C: d2c_verify_interactive_states() [보조]
+        AI->>D2C: d2c_phase2_image_diff(78%, iteration:1)
         D2C-->>AI: HITL 옵션 표시
     end
     
-    AI->>User: [1] [2] [3] [P] [D] [B] [완료]?
-    User-->>AI: 완료
+    AI->>User: [1] [2] [3] [P] [D] [B] [R] [완료]?
+    User-->>AI: 3 선택
     
+    rect rgb(220, 220, 255)
+        Note over AI,PW: Phase 3: LLM DOM 수정
+        AI->>D2C: d2c_create_dom_golden(targetUrl)
+        D2C->>PW: DOM 스냅샷 저장
+        AI->>AI: DOM 차이 분석 → LLM 코드 수정
+        AI->>D2C: d2c_run_dom_golden_test(golden, target)
+        D2C->>PW: DOM 비교
+        PW-->>D2C: DOM 성공률 88%
+        AI->>D2C: d2c_run_visual_test(baseline, target)
+        PW-->>D2C: Pixel 성공률 92%
+        AI->>D2C: d2c_compare_accessibility() [보조]
+        AI->>D2C: d2c_phase3_dom_compare(pixel:92%, dom:88%, iteration:1)
+        D2C-->>AI: HITL 옵션 표시
+    end
+    
+    AI->>User: [1] [2] [3] [P] [D] [B] [R] [완료]?
+    User-->>AI: R 선택 (반응형 테스트)
+    
+    rect rgb(255, 255, 220)
+        Note over AI,PW: 반응형 브레이크포인트 테스트
+        AI->>D2C: d2c_test_responsive(targetUrl)
+        D2C->>PW: 320, 375, 768, 1024, 1440px 테스트
+        PW-->>D2C: 스크린샷 5장 저장
+        D2C-->>AI: 반응형 결과 표시
+    end
+    
+    AI->>User: [1] [2] [3] [P] [D] [B] [R] [완료]?
+    User-->>AI: 완료 선택
+    
+    Note over AI,D2C: Step 5: 워크플로우 완료
+    AI->>D2C: d2c_complete_workflow()
+    D2C-->>AI: 세션 요약 리포트
     AI-->>User: 최종 코드 + 성공률 리포트
 ```
 
@@ -283,10 +332,13 @@ sequenceDiagram
 - [P] Pixel 비교 재실행
 - [D] DOM 비교 재실행
 - [B] Baseline 재캡처 (Figma 스크린샷)
+- [R] 반응형 브레이크포인트 테스트
 
 **종료:**
-- [완료] 현재 상태로 종료
+- [완료] 워크플로우 종료 → d2c_complete_workflow() 호출
 ```
+
+> ⚠️ **[완료] 선택 전까지 HITL 루프가 계속됩니다.** 명시적으로 완료해야 세션이 종료됩니다.
 
 ## 제공 도구 (Tools)
 
