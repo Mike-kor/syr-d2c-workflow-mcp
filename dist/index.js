@@ -46,6 +46,69 @@ const PHASE_TARGETS = {
     phase2: parseInt(process.env.D2C_PHASE2_TARGET || "70", 10), // Phase 2 참고 기준
     phase3: parseInt(process.env.D2C_PHASE3_TARGET || "90", 10), // Phase 3 참고 기준
 };
+// 세션 상태 (MCP 서버 인스턴스당 하나)
+let sessionState = {
+    phase1Executed: false,
+    phase2Executed: false,
+    phase3Executed: false,
+    currentPhase: null,
+    phaseHistory: [],
+    workflowStarted: false,
+    workflowCompleted: false,
+};
+// 세션 상태 초기화
+function resetSessionState() {
+    sessionState = {
+        phase1Executed: false,
+        phase2Executed: false,
+        phase3Executed: false,
+        currentPhase: null,
+        phaseHistory: [],
+        workflowStarted: false,
+        workflowCompleted: false,
+    };
+}
+// Phase 실행 기록
+function recordPhaseExecution(phase, iteration, successRate) {
+    sessionState.phaseHistory.push({
+        phase,
+        iteration,
+        successRate,
+        timestamp: new Date(),
+    });
+    if (phase === 1)
+        sessionState.phase1Executed = true;
+    if (phase === 2)
+        sessionState.phase2Executed = true;
+    if (phase === 3)
+        sessionState.phase3Executed = true;
+    sessionState.currentPhase = phase;
+    sessionState.workflowStarted = true;
+}
+// 세션 요약 생성
+function generateSessionSummary() {
+    if (sessionState.phaseHistory.length === 0) {
+        return "세션 이력이 없습니다.";
+    }
+    const summary = sessionState.phaseHistory.map((record, index) => {
+        const time = record.timestamp.toLocaleTimeString("ko-KR");
+        return `${index + 1}. Phase ${record.phase} (v${record.iteration}) - ${record.successRate.toFixed(1)}% @ ${time}`;
+    }).join("\n");
+    const lastRecord = sessionState.phaseHistory[sessionState.phaseHistory.length - 1];
+    const totalIterations = sessionState.phaseHistory.length;
+    return `## 📊 세션 요약
+
+### 실행 이력
+${summary}
+
+### 통계
+- 총 Phase 실행: ${totalIterations}회
+- 최종 Phase: Phase ${lastRecord.phase}
+- 최종 성공률: ${lastRecord.successRate.toFixed(1)}%
+- Phase 1 실행: ${sessionState.phase1Executed ? "✅" : "❌"}
+- Phase 2 실행: ${sessionState.phase2Executed ? "✅" : "❌"}
+- Phase 3 실행: ${sessionState.phase3Executed ? "✅" : "❌"}`;
+}
 // OpenSpec 규칙 탐지 경로
 const OPENSPEC_SEARCH_PATHS = [
     "openspec/specs/*/spec.md",
@@ -1753,6 +1816,41 @@ ${SERVICE_IDENTIFIERS}
                     required: ["code"],
                 },
             },
+            // 세션 상태 조회
+            {
+                name: "d2c_get_session_state",
+                description: `현재 D2C 워크플로우 세션 상태를 조회합니다.
+${SERVICE_IDENTIFIERS}
+
+📊 **조회 내용**:
+- Phase 실행 이력
+- 현재 Phase
+- 워크플로우 시작/완료 여부`,
+                inputSchema: {
+                    type: "object",
+                    properties: {},
+                },
+            },
+            // 워크플로우 완료
+            {
+                name: "d2c_complete_workflow",
+                description: `D2C 워크플로우를 명시적으로 완료하고 세션을 종료합니다.
+${SERVICE_IDENTIFIERS}
+
+✅ **완료 시 처리**:
+- 세션 요약 리포트 생성
+- 세션 상태 초기화
+- 워크플로우 종료`,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        finalNotes: {
+                            type: "string",
+                            description: "최종 메모 (선택)",
+                        },
+                    },
+                },
+            },
             // get_component_template - 템플릿 생성
             {
                 name: "d2c_get_component_template",
@@ -1950,7 +2048,53 @@ d2c_capture_figma_baseline()
 `;
                 }
                 else {
-                    phaseSelectionGuide = `
+                    // 세션 상태 확인 - Phase 1 이력 없으면 자동 실행 안내
+                    if (!sessionState.phase1Executed) {
+                        // 워크플로우 시작 표시
+                        sessionState.workflowStarted = true;
+                        phaseSelectionGuide = `
+---
+
+## 🚀 자동 Phase 1 실행
+
+**첫 워크플로우 진입입니다. Phase 1을 실행하세요.**
+
+### 📋 Phase 1 실행 순서
+
+1. **Figma MCP로 코드 추출**
+   \`\`\`
+   figma-mcp의 get_code 또는 유사 도구로 코드 추출
+   \`\`\`
+
+2. **구현체 렌더링** (로컬 서버 실행)
+
+3. **Pixel 비교 실행**
+   \`\`\`
+   d2c_run_visual_test({
+     testName: "component",
+     targetUrl: "http://localhost:3000",
+     baselineImagePath: "${BASELINE_PATH}",
+     phase: 1,
+     iteration: 1
+   })
+   \`\`\`
+
+4. **Phase 1 결과 확인**
+   \`\`\`
+   d2c_phase1_compare({
+     successRate: [결과값],
+     iteration: 1
+   })
+   \`\`\`
+
+> ⚠️ **이 단계를 완료해야 HITL 루프가 시작됩니다.**
+> Phase 1 완료 후 [1][2][3][P][D][B][완료] 옵션이 표시됩니다.
+
+📌 **Figma URL**: \`${figmaStatus.url}\`
+`;
+                    }
+                    else {
+                        phaseSelectionGuide = `
 ---
 
 ## ✋ HITL - Phase를 선택하세요
@@ -1968,7 +2112,9 @@ d2c_capture_figma_baseline()
 - Phase 1: ${PHASE_TARGETS.phase1}% | Phase 2: ${PHASE_TARGETS.phase2}% | Phase 3: ${PHASE_TARGETS.phase3}%
 
 📌 **Figma URL**: \`${figmaStatus.url}\`
+📌 **세션 상태**: Phase 1 ✅ | Phase 2 ${sessionState.phase2Executed ? "✅" : "❌"} | Phase 3 ${sessionState.phase3Executed ? "✅" : "❌"}
 `;
+                    }
                 }
                 return {
                     content: [
@@ -3110,6 +3256,8 @@ d2c_phase1_compare({
                         };
                     }
                 }
+                // 세션에 Phase 1 실행 기록
+                recordPhaseExecution(1, iteration, successRate);
                 // 성공률 변화 계산
                 const lastRate = previousRates?.length ? previousRates[previousRates.length - 1] : null;
                 const rateDiff = lastRate !== null ? successRate - lastRate : null;
@@ -3171,7 +3319,9 @@ ${openSpecSection}
 - **[B]** Baseline 재캡처 (Figma 스크린샷)
 
 **종료:**
-- **[완료]** 현재 상태로 종료
+- **[완료]** 워크플로우 종료 → \`d2c_complete_workflow()\` 호출
+
+> ⚠️ **[완료] 선택 전까지 HITL 루프가 계속됩니다.**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -3240,6 +3390,8 @@ ${openSpecSection}
                     const severityIcon = d.severity === "high" ? "🔴" : d.severity === "medium" ? "🟡" : "🟢";
                     return `${severityIcon} ${d.area}: ${d.type}`;
                 }).join("\n") : "";
+                // 세션에 Phase 2 실행 기록
+                recordPhaseExecution(2, iteration, successRate);
                 // OpenSpec 규칙 로드 (매번 확인)
                 const openSpecRules2 = await loadOpenSpecRules();
                 let openSpecSection2 = "";
@@ -3296,7 +3448,9 @@ ${openSpecSection2}
 - **[B]** Baseline 재캡처 (Figma 스크린샷)
 
 **종료:**
-- **[완료]** 현재 상태로 종료
+- **[완료]** 워크플로우 종료 → \`d2c_complete_workflow()\` 호출
+
+> ⚠️ **[완료] 선택 전까지 HITL 루프가 계속됩니다.**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -3393,6 +3547,9 @@ ${openSpecSection2}
 | **성공률** | ${progressBar} **${effectiveRate.toFixed(1)}%** |
 | 반복 횟수 | ${iteration}회 |`;
                 }
+                // 세션에 Phase 3 실행 기록 (DOM 또는 Pixel 중 주요 성공률 사용)
+                const phase3SuccessRate = domRate ?? pixelRate ?? legacyRate ?? 0;
+                recordPhaseExecution(3, iteration, phase3SuccessRate);
                 // OpenSpec 규칙 로드 (매번 확인)
                 const openSpecRules3 = await loadOpenSpecRules();
                 let openSpecSection3 = "";
@@ -3444,7 +3601,79 @@ ${openSpecSection3}
 - **[B]** Baseline 재캡처 (Figma 스크린샷)
 
 **종료:**
-- **[완료]** 현재 상태로 종료
+- **[완료]** 워크플로우 종료 → \`d2c_complete_workflow()\` 호출
+
+> ⚠️ **[완료] 선택 전까지 HITL 루프가 계속됩니다.**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_get_session_state": {
+                const historyText = sessionState.phaseHistory.length > 0
+                    ? sessionState.phaseHistory.map((record, index) => {
+                        const time = record.timestamp.toLocaleTimeString("ko-KR");
+                        return `| ${index + 1} | Phase ${record.phase} | v${record.iteration} | ${record.successRate.toFixed(1)}% | ${time} |`;
+                    }).join("\n")
+                    : "| - | - | - | - | - |";
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **D2C 세션 상태**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 현재 상태
+
+| 항목 | 상태 |
+|------|------|
+| 워크플로우 시작 | ${sessionState.workflowStarted ? "✅ 시작됨" : "❌ 미시작"} |
+| 현재 Phase | ${sessionState.currentPhase ?? "-"} |
+| Phase 1 실행 | ${sessionState.phase1Executed ? "✅" : "❌"} |
+| Phase 2 실행 | ${sessionState.phase2Executed ? "✅" : "❌"} |
+| Phase 3 실행 | ${sessionState.phase3Executed ? "✅" : "❌"} |
+
+## 실행 이력
+
+| # | Phase | Iteration | 성공률 | 시간 |
+|---|-------|-----------|--------|------|
+${historyText}
+
+## 다음 단계
+
+${!sessionState.phase1Executed
+                                ? `⚠️ **Phase 1이 실행되지 않았습니다.**
+첫 워크플로우 시작 시 Phase 1 실행이 권장됩니다.`
+                                : `✅ Phase 1 완료. HITL 옵션에서 다음 작업을 선택하세요.`}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+                        },
+                    ],
+                };
+            }
+            case "d2c_complete_workflow": {
+                const input = z
+                    .object({
+                    finalNotes: z.string().optional(),
+                })
+                    .parse(args);
+                const summary = generateSessionSummary();
+                const finalNotesSection = input.finalNotes ? `\n## 📝 최종 메모\n${input.finalNotes}\n` : "";
+                // 세션 상태 초기화
+                resetSessionState();
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ **D2C 워크플로우 완료**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${summary}
+${finalNotesSection}
+## 🔄 세션 초기화 완료
+
+새로운 D2C 워크플로우를 시작하려면 \`syr\` 또는 관련 키워드로 다시 시작하세요.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
                         },
                     ],
@@ -3963,9 +4192,62 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 - 컴포넌트명: ${componentName}
 - 프레임워크: ${framework}
 
-### 📊 Phase 시스템 (동등 선택)
+---
 
-**Phase는 순서 없이 자유롭게 선택할 수 있습니다.**
+## ⚠️ 핵심 규칙 (반드시 준수)
+
+### 🚀 첫 진입 시 자동 Phase 1 실행
+**세션에서 Phase 1을 실행한 적이 없으면, 반드시 Phase 1을 먼저 실행하세요.**
+- 사전검사 → Figma URL 설정 → Baseline 캡처 → **Phase 1 실행** → Pixel 비교
+- 이 단계를 완료해야 HITL 루프가 시작됩니다.
+
+### 🔄 HITL 루프 강제
+**[완료]를 선택할 때까지 HITL이 계속됩니다.**
+- Phase 완료 후 반드시 [1][2][3][P][D][B][완료] 중 하나를 선택하세요.
+- [완료] 선택 전까지는 워크플로우가 종료되지 않습니다.
+
+---
+
+### 📋 첫 사이클 완성 가이드 (프로토타입)
+
+\`\`\`
+1️⃣ d2c_preflight_check()
+   → FIGMA_TOKEN, URL, Baseline, 규칙 확인
+   
+2️⃣ d2c_set_figma_url({ figmaUrl: "..." })
+   → Figma 디자인 URL 설정
+   
+3️⃣ d2c_capture_figma_baseline()
+   → Figma 스크린샷 캡처 (720x1600)
+   
+4️⃣ Figma MCP로 코드 추출
+   → figma-mcp 도구로 디자인 → 코드 변환
+   
+5️⃣ 로컬 서버에서 구현체 렌더링
+   → http://localhost:3000 등에서 확인
+   
+6️⃣ d2c_run_visual_test({
+     testName: "component",
+     targetUrl: "http://localhost:3000",
+     baselineImagePath: "./d2c-baseline/design.png",
+     phase: 1,
+     iteration: 1
+   })
+   → Pixel 비교 실행
+   
+7️⃣ d2c_phase1_compare({
+     successRate: [결과값],
+     iteration: 1
+   })
+   → Phase 1 결과 확인 + HITL 표시
+   
+8️⃣ HITL: [1][2][3][P][D][B][완료] 선택
+   → [완료] 선택 시 → d2c_complete_workflow() 호출
+\`\`\`
+
+---
+
+### 📊 Phase 시스템
 
 | Phase | 수정 방식 | 참고 기준 |
 |-------|----------|----------|
@@ -3977,72 +4259,52 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 
 ---
 
-### Step 1: 사전 검사 + Phase 선택
-1. \`d2c_preflight_check\` 호출
-2. 규칙 파일, MCP 설치 확인
-3. ✅ 통과 시 → **HITL: Phase 선택**
-   - [1] Phase 1: Figma MCP 재추출
-   - [2] Phase 2: LLM 이미지 diff 수정
-   - [3] Phase 3: LLM DOM 수정
+### 🔄 Phase별 실행 방법
+
+#### Phase 1 (Figma MCP 재추출)
+1. Figma MCP로 코드 추출/수정
+2. \`d2c_run_visual_test\`로 Pixel 비교
+3. \`d2c_phase1_compare\` 호출 → HITL
+
+#### Phase 2 (LLM 이미지 diff 수정)
+1. diff 이미지의 빨간색 영역 분석
+2. LLM이 코드 수정
+3. \`d2c_run_visual_test\`로 Pixel 비교
+4. \`d2c_phase2_image_diff\` 호출 → HITL
+
+#### Phase 3 (LLM DOM 수정)
+1. \`d2c_run_dom_golden_test\`로 DOM 비교
+2. DOM 차이 기반 LLM 코드 수정
+3. \`d2c_run_visual_test\`로 Pixel 비교
+4. \`d2c_phase3_dom_compare\` 호출 → HITL
 
 ---
 
-### Step 2: Baseline 캡처 (Playwright)
-1. \`d2c_capture_figma_baseline({ figmaUrl: "..." })\` 호출
-2. Playwright가 Figma 페이지 스크린샷을 \`./d2c-baseline/design.png\`에 저장
+### ✋ HITL 옵션 설명
+
+| 옵션 | 설명 |
+|------|------|
+| **[1]** | Phase 1 실행 (Figma MCP 재추출) |
+| **[2]** | Phase 2 실행 (LLM 이미지 diff 수정) |
+| **[3]** | Phase 3 실행 (LLM DOM 수정) |
+| **[P]** | Pixel 비교 재실행 |
+| **[D]** | DOM 비교 재실행 |
+| **[B]** | Baseline 재캡처 |
+| **[완료]** | 워크플로우 종료 → \`d2c_complete_workflow()\` |
 
 ---
 
-### 🔄 Phase 실행 (선택한 Phase)
-
-#### Phase 1 선택 시 (Figma MCP 재추출)
-1. \`d2c_get_component_template\`로 템플릿 생성
-2. **Figma MCP로 코드 추출/수정**
-3. \`d2c_run_visual_test\`로 **Playwright pixel 비교**
-4. **\`d2c_phase1_compare\`** 호출 → 성공률 확인
-5. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
-
-#### Phase 2 선택 시 (LLM 이미지 diff 수정)
-1. \`d2c_run_visual_test\`로 비교 + diff 이미지 분석
-2. **diff의 빨간색 영역 기반 LLM 코드 수정**
-3. 재렌더링 후 다시 pixel 비교
-4. **\`d2c_phase2_image_diff\`** 호출 → 성공률 확인
-5. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
-
-#### Phase 3 선택 시 (LLM DOM 수정)
-1. \`d2c_create_dom_golden\`으로 golden DOM 생성 (최초 1회)
-2. \`d2c_run_dom_golden_test\`로 **DOM 비교 → DOM 성공률**
-3. DOM 차이 기반 **LLM 코드 수정**
-4. \`d2c_run_visual_test\`로 **pixel 비교 → 픽셀 성공률**
-5. **\`d2c_phase3_dom_compare\`** 호출 → **DOM + 픽셀 이중 성공률 확인**
-6. **HITL: 다음 Phase 선택** [1] [2] [3] [완료]
-
----
-
-### Step 3: 완료
-1. 사용자가 [완료] 선택 시 종료
-2. 최종 코드와 파일 경로 보고
-3. 성공률 히스토리 요약
-
----
-
-**⚠️ 중요 규칙**:
-- **Phase는 순서 없이 자유 선택** (1→2→3 순서 강제 없음)
-- **모든 Phase 실행 후 Playwright pixel 비교로 성공률 표시**
-- **Phase 3은 DOM 성공률 + 픽셀 성공률 둘 다 표시**
-- **참고 기준(${PHASE_TARGETS.phase1}/${PHASE_TARGETS.phase2}/${PHASE_TARGETS.phase3}%)은 참고용** - 판단은 사용자가!
-- 매 Phase 후 **HITL로 다음 Phase 선택** [1] [2] [3] [완료]
-
----
-
-### 📋 도구 사용법
-| 도구 | 용도 | Phase |
-|------|------|-------|
-| \`d2c_run_visual_test\` | **Playwright pixel 비교** | 1, 2, 3 |
-| \`d2c_run_dom_golden_test\` | **Playwright DOM 비교** | 3 |
-| \`d2c_phase1_compare\` | Phase 1 결과 + HITL | 1 |
-| \`d2c_phase2_image_diff\` | Phase 2 결과 + HITL | 2 |
-| \`d2c_phase3_dom_compare\` | Phase 3 결과 + HITL | 3 |`,
+### 📋 도구 요약
+| 도구 | 용도 |
+|------|------|
+| \`d2c_preflight_check\` | 사전 검사 + 첫 진입 시 Phase 1 안내 |
+| \`d2c_get_session_state\` | 현재 세션 상태 조회 |
+| \`d2c_run_visual_test\` | Pixel 비교 |
+| \`d2c_run_dom_golden_test\` | DOM 비교 (Phase 3) |
+| \`d2c_phase1_compare\` | Phase 1 결과 + HITL |
+| \`d2c_phase2_image_diff\` | Phase 2 결과 + HITL |
+| \`d2c_phase3_dom_compare\` | Phase 3 결과 + HITL |
+| \`d2c_complete_workflow\` | 워크플로우 완료 + 세션 초기화 |`,
                     },
                 },
             ],

@@ -523,6 +523,17 @@ npm run dev
 
 ## 변경 이력
 
+### v1.7.0
+- **자동 Phase 1 진입** 강제
+  - 세션에서 Phase 1 이력 없으면 사전검사 후 Phase 1 자동 실행 안내
+  - 첫 사이클 완성 가이드 추가
+- **세션 상태 관리** 추가
+  - `d2c_get_session_state` - 현재 세션 상태 조회
+  - `d2c_complete_workflow` - 워크플로우 명시적 완료
+- **HITL 루프 강제**
+  - [완료] 선택 전까지 HITL 지속
+  - 완료 시 세션 요약 리포트 생성
+
 ### v1.6.0
 - Phase 결과에 **OpenSpec 규칙 자동 표시**
   - 매 Phase 실행 시 OpenSpec 규칙을 자동 로드
