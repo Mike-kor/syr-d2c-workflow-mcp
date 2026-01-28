@@ -2199,6 +2199,303 @@ ${SERVICE_IDENTIFIERS}
           required: ["componentName"],
         },
       },
+
+      // ============ PLAYWRIGHT 고급 검증 도구들 ============
+
+      // Bounding Box 비교
+      {
+        name: "d2c_compare_bounding_box",
+        description: `요소의 Bounding Box(위치, 크기)를 Figma 디자인과 비교합니다.
+${SERVICE_IDENTIFIERS}
+
+📐 **Bounding Box 비교**:
+- 요소의 x, y, width, height를 Figma 값과 비교
+- 허용 오차(tolerance) 내 일치 여부 판단
+- 레이아웃 정확도를 수치로 검증
+
+💡 **사용법**:
+1. Figma에서 요소의 위치/크기 추출
+2. 이 도구로 실제 렌더링 결과와 비교
+3. 오차가 큰 요소 식별 및 수정
+
+⚠️ **Phase 1 보조 도구로 사용 권장**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "검증할 페이지 URL",
+            },
+            elements: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  selector: { type: "string", description: "CSS 선택자" },
+                  expected: {
+                    type: "object",
+                    properties: {
+                      x: { type: "number" },
+                      y: { type: "number" },
+                      width: { type: "number" },
+                      height: { type: "number" },
+                    },
+                    description: "Figma에서 추출한 기대 값",
+                  },
+                },
+              },
+              description: "비교할 요소 목록",
+            },
+            tolerance: {
+              type: "number",
+              description: "허용 오차 픽셀 (기본: 2)",
+            },
+          },
+          required: ["targetUrl", "elements"],
+        },
+      },
+
+      // CSS Computed Style 비교
+      {
+        name: "d2c_compare_styles",
+        description: `요소의 CSS Computed Style을 Figma 디자인 값과 비교합니다.
+${SERVICE_IDENTIFIERS}
+
+🎨 **CSS Style 비교**:
+- font-size, color, padding, margin 등 핵심 속성 검증
+- Figma에서 추출한 스타일 값과 실제 computed style 비교
+- 미세한 스타일 차이 감지
+
+💡 **사용법**:
+1. Figma에서 요소의 스타일 속성 추출
+2. 이 도구로 실제 적용된 스타일과 비교
+3. 불일치 속성 식별 및 수정
+
+⚠️ **Phase 2 보조 도구로 사용 권장**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "검증할 페이지 URL",
+            },
+            elements: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  selector: { type: "string", description: "CSS 선택자" },
+                  expectedStyles: {
+                    type: "object",
+                    additionalProperties: { type: "string" },
+                    description: "기대하는 CSS 속성들 (예: { fontSize: '16px', color: 'rgb(0,0,0)' })",
+                  },
+                },
+              },
+              description: "비교할 요소 목록",
+            },
+          },
+          required: ["targetUrl", "elements"],
+        },
+      },
+
+      // Interactive State 검증
+      {
+        name: "d2c_verify_interactive_states",
+        description: `요소의 인터랙티브 상태(hover, focus, active)별 스타일을 검증합니다.
+${SERVICE_IDENTIFIERS}
+
+🖱️ **Interactive State 검증**:
+- hover, focus, active, disabled 상태별 스타일 확인
+- Figma variant와 실제 구현 비교
+- 인터랙션 피드백 검증
+
+💡 **사용법**:
+1. Figma에서 각 상태별 스타일 추출
+2. 이 도구로 실제 상태 변화 검증
+3. 누락된 상태 피드백 식별
+
+⚠️ **Phase 2 확장 도구로 사용 권장**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "검증할 페이지 URL",
+            },
+            element: {
+              type: "object",
+              properties: {
+                selector: { type: "string", description: "CSS 선택자" },
+                states: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      state: { 
+                        type: "string", 
+                        enum: ["hover", "focus", "active", "disabled"],
+                        description: "검증할 상태" 
+                      },
+                      expectedStyles: {
+                        type: "object",
+                        additionalProperties: { type: "string" },
+                        description: "해당 상태에서 기대하는 스타일",
+                      },
+                    },
+                  },
+                  description: "검증할 상태 목록",
+                },
+              },
+              description: "검증할 요소",
+            },
+            captureScreenshots: {
+              type: "boolean",
+              description: "각 상태별 스크린샷 캡처 (기본: false)",
+            },
+          },
+          required: ["targetUrl", "element"],
+        },
+      },
+
+      // Responsive Breakpoint 테스트
+      {
+        name: "d2c_test_responsive",
+        description: `여러 뷰포트 크기에서 컴포넌트를 테스트합니다.
+${SERVICE_IDENTIFIERS}
+
+📱 **Responsive 테스트**:
+- 주요 브레이크포인트(320, 375, 768, 1024, 1440)에서 자동 테스트
+- 각 뷰포트에서 스크린샷 캡처 및 비교
+- 반응형 레이아웃 검증
+
+💡 **사용법**:
+1. baseline 이미지 경로 지정 (또는 Figma 반응형 variant)
+2. 이 도구로 각 브레이크포인트 테스트
+3. 깨지는 뷰포트 식별 및 수정
+
+⚠️ **전체 Phase에서 사용 가능**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "테스트할 페이지 URL",
+            },
+            breakpoints: {
+              type: "array",
+              items: { type: "number" },
+              description: "테스트할 뷰포트 너비 목록 (기본: [320, 375, 768, 1024, 1440])",
+            },
+            height: {
+              type: "number",
+              description: "뷰포트 높이 (기본: 800)",
+            },
+            baselineImages: {
+              type: "object",
+              additionalProperties: { type: "string" },
+              description: "브레이크포인트별 baseline 이미지 경로 (예: { '375': './baseline-375.png' })",
+            },
+            selector: {
+              type: "string",
+              description: "특정 요소만 캡처할 선택자 (선택)",
+            },
+          },
+          required: ["targetUrl"],
+        },
+      },
+
+      // Font Metrics 검증
+      {
+        name: "d2c_verify_fonts",
+        description: `텍스트 요소의 폰트 설정이 Figma와 일치하는지 검증합니다.
+${SERVICE_IDENTIFIERS}
+
+🔤 **Font Metrics 검증**:
+- fontFamily, fontSize, fontWeight, lineHeight, letterSpacing 비교
+- 폰트 대체(fallback) 발생 여부 감지
+- 폰트 로딩 완료 후 검증
+
+💡 **사용법**:
+1. Figma에서 텍스트 스타일 추출
+2. 이 도구로 실제 적용된 폰트 검증
+3. 폰트 불일치 수정
+
+⚠️ **Phase 1 보조 도구로 사용 권장**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "검증할 페이지 URL",
+            },
+            textElements: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  selector: { type: "string", description: "CSS 선택자" },
+                  expected: {
+                    type: "object",
+                    properties: {
+                      fontFamily: { type: "string" },
+                      fontSize: { type: "string" },
+                      fontWeight: { type: "string" },
+                      lineHeight: { type: "string" },
+                      letterSpacing: { type: "string" },
+                    },
+                    description: "Figma에서 추출한 기대 값",
+                  },
+                },
+              },
+              description: "검증할 텍스트 요소 목록",
+            },
+          },
+          required: ["targetUrl", "textElements"],
+        },
+      },
+
+      // Accessibility Snapshot 비교
+      {
+        name: "d2c_compare_accessibility",
+        description: `페이지의 접근성 트리를 분석하고 검증합니다.
+${SERVICE_IDENTIFIERS}
+
+♿ **Accessibility 검증**:
+- 접근성 트리(accessibility tree) 분석
+- 누락된 aria-label, role 속성 감지
+- heading 구조, 랜드마크 검증
+- 읽기 순서(tab order) 확인
+
+💡 **사용법**:
+1. 이 도구로 현재 페이지의 접근성 상태 분석
+2. 누락된 접근성 속성 식별
+3. WCAG 가이드라인에 맞게 수정
+
+⚠️ **Phase 3 보조 도구로 사용 권장**`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetUrl: {
+              type: "string",
+              description: "검증할 페이지 URL",
+            },
+            checkItems: {
+              type: "array",
+              items: {
+                type: "string",
+                enum: ["headings", "landmarks", "aria-labels", "tab-order", "images", "forms"],
+              },
+              description: "검증할 항목 (기본: 전체)",
+            },
+            selector: {
+              type: "string",
+              description: "특정 영역만 검증할 선택자 (선택)",
+            },
+          },
+          required: ["targetUrl"],
+        },
+      },
     ],
   };
 });
@@ -4614,6 +4911,981 @@ ${template}
             },
           ],
         };
+      }
+
+      // ============ PLAYWRIGHT 고급 검증 핸들러들 ============
+
+      case "d2c_compare_bounding_box": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            elements: z.array(z.object({
+              selector: z.string(),
+              expected: z.object({
+                x: z.number().optional(),
+                y: z.number().optional(),
+                width: z.number().optional(),
+                height: z.number().optional(),
+              }),
+            })),
+            tolerance: z.number().optional().default(2),
+          })
+          .parse(args);
+
+        const testScript = `
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const results = [];
+  const elements = ${JSON.stringify(input.elements)};
+  const tolerance = ${input.tolerance};
+  
+  for (const elem of elements) {
+    const locator = page.locator(elem.selector).first();
+    const box = await locator.boundingBox();
+    
+    if (!box) {
+      results.push({ selector: elem.selector, error: 'Element not found', pass: false });
+      continue;
+    }
+    
+    const diffs = {};
+    let pass = true;
+    
+    if (elem.expected.x !== undefined) {
+      diffs.x = { expected: elem.expected.x, actual: box.x, diff: Math.abs(box.x - elem.expected.x) };
+      if (diffs.x.diff > tolerance) pass = false;
+    }
+    if (elem.expected.y !== undefined) {
+      diffs.y = { expected: elem.expected.y, actual: box.y, diff: Math.abs(box.y - elem.expected.y) };
+      if (diffs.y.diff > tolerance) pass = false;
+    }
+    if (elem.expected.width !== undefined) {
+      diffs.width = { expected: elem.expected.width, actual: box.width, diff: Math.abs(box.width - elem.expected.width) };
+      if (diffs.width.diff > tolerance) pass = false;
+    }
+    if (elem.expected.height !== undefined) {
+      diffs.height = { expected: elem.expected.height, actual: box.height, diff: Math.abs(box.height - elem.expected.height) };
+      if (diffs.height.diff > tolerance) pass = false;
+    }
+    
+    results.push({ selector: elem.selector, box, diffs, pass });
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          const scriptPath = path.join(testDir, "bounding-box-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 30000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const passed = results.filter((r: { pass: boolean }) => r.pass).length;
+          const total = results.length;
+          const successRate = total > 0 ? (passed / total) * 100 : 0;
+          
+          const resultTable = results.map((r: { selector: string; pass: boolean; error?: string; diffs?: Record<string, { expected: number; actual: number; diff: number }> }) => {
+            if (r.error) return `| \`${r.selector}\` | ❌ | ${r.error} |`;
+            const diffInfo = Object.entries(r.diffs || {})
+              .map(([k, v]) => `${k}: ${v.actual.toFixed(1)} (차이: ${v.diff.toFixed(1)}px)`)
+              .join(", ");
+            return `| \`${r.selector}\` | ${r.pass ? "✅" : "❌"} | ${diffInfo} |`;
+          }).join("\n");
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📐 **Bounding Box 비교 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successRate.toFixed(1)}% (${passed}/${total}) |
+| 허용 오차 | ${input.tolerance}px |
+| 대상 URL | ${input.targetUrl} |
+
+## 상세 결과
+| 선택자 | 상태 | 세부 정보 |
+|--------|------|-----------|
+${resultTable}
+
+## 활용 가이드
+- ❌ 표시된 요소의 CSS를 수정하세요
+- 차이가 큰 속성부터 우선 수정
+- Figma 좌표계와 브라우저 좌표계 차이 고려
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ Bounding Box 비교 실패: ${message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "d2c_compare_styles": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            elements: z.array(z.object({
+              selector: z.string(),
+              expectedStyles: z.record(z.string()),
+            })),
+          })
+          .parse(args);
+
+        const testScript = `
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const results = [];
+  const elements = ${JSON.stringify(input.elements)};
+  
+  for (const elem of elements) {
+    const locator = page.locator(elem.selector).first();
+    const exists = await locator.count() > 0;
+    
+    if (!exists) {
+      results.push({ selector: elem.selector, error: 'Element not found', pass: false });
+      continue;
+    }
+    
+    const actualStyles = await locator.evaluate((el, props) => {
+      const computed = window.getComputedStyle(el);
+      const result = {};
+      for (const prop of props) {
+        result[prop] = computed.getPropertyValue(prop.replace(/([A-Z])/g, '-$1').toLowerCase());
+      }
+      return result;
+    }, Object.keys(elem.expectedStyles));
+    
+    const diffs = {};
+    let pass = true;
+    
+    for (const [prop, expected] of Object.entries(elem.expectedStyles)) {
+      const actual = actualStyles[prop] || '';
+      const match = actual.trim().toLowerCase() === expected.trim().toLowerCase();
+      if (!match) {
+        pass = false;
+        diffs[prop] = { expected, actual };
+      }
+    }
+    
+    results.push({ selector: elem.selector, actualStyles, diffs, pass });
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          const scriptPath = path.join(testDir, "style-compare-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 30000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const passed = results.filter((r: { pass: boolean }) => r.pass).length;
+          const total = results.length;
+          const successRate = total > 0 ? (passed / total) * 100 : 0;
+          
+          const resultDetails = results.map((r: { selector: string; pass: boolean; error?: string; diffs?: Record<string, { expected: string; actual: string }> }) => {
+            if (r.error) return `### \`${r.selector}\` ❌\n${r.error}\n`;
+            if (r.pass) return `### \`${r.selector}\` ✅\n모든 스타일 일치\n`;
+            
+            const diffList = Object.entries(r.diffs || {})
+              .map(([prop, v]) => `- **${prop}**: 기대 \`${v.expected}\` → 실제 \`${v.actual}\``)
+              .join("\n");
+            return `### \`${r.selector}\` ❌\n${diffList}\n`;
+          }).join("\n");
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎨 **CSS Computed Style 비교 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successRate.toFixed(1)}% (${passed}/${total}) |
+| 대상 URL | ${input.targetUrl} |
+
+## 상세 결과
+${resultDetails}
+
+## 수정 가이드
+- 불일치 속성의 CSS 값을 Figma 기대값으로 수정
+- 색상은 rgb() 형식으로 비교됨 (hex → rgb 변환 필요)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ CSS Style 비교 실패: ${message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "d2c_verify_interactive_states": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            element: z.object({
+              selector: z.string(),
+              states: z.array(z.object({
+                state: z.enum(["hover", "focus", "active", "disabled"]),
+                expectedStyles: z.record(z.string()),
+              })),
+            }),
+            captureScreenshots: z.boolean().optional().default(false),
+          })
+          .parse(args);
+
+        const testScript = `
+const { chromium } = require('playwright');
+const path = require('path');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const results = [];
+  const element = ${JSON.stringify(input.element)};
+  const captureScreenshots = ${input.captureScreenshots};
+  const screenshotDir = '${SCREENSHOT_DIR}';
+  
+  const locator = page.locator(element.selector).first();
+  const exists = await locator.count() > 0;
+  
+  if (!exists) {
+    console.log(JSON.stringify([{ state: 'all', error: 'Element not found', pass: false }]));
+    await browser.close();
+    return;
+  }
+  
+  for (const stateConfig of element.states) {
+    const { state, expectedStyles } = stateConfig;
+    
+    try {
+      // 상태 적용
+      if (state === 'hover') {
+        await locator.hover();
+      } else if (state === 'focus') {
+        await locator.focus();
+      } else if (state === 'active') {
+        await locator.hover();
+        await page.mouse.down();
+      }
+      
+      await page.waitForTimeout(100); // 스타일 적용 대기
+      
+      // 스타일 확인
+      const actualStyles = await locator.evaluate((el, props) => {
+        const computed = window.getComputedStyle(el);
+        const result = {};
+        for (const prop of props) {
+          result[prop] = computed.getPropertyValue(prop.replace(/([A-Z])/g, '-$1').toLowerCase());
+        }
+        return result;
+      }, Object.keys(expectedStyles));
+      
+      const diffs = {};
+      let pass = true;
+      
+      for (const [prop, expected] of Object.entries(expectedStyles)) {
+        const actual = actualStyles[prop] || '';
+        if (actual.trim().toLowerCase() !== expected.trim().toLowerCase()) {
+          pass = false;
+          diffs[prop] = { expected, actual };
+        }
+      }
+      
+      // 스크린샷 캡처
+      let screenshotPath = null;
+      if (captureScreenshots) {
+        screenshotPath = path.join(screenshotDir, 'interactive-' + state + '-' + Date.now() + '.png');
+        await page.screenshot({ path: screenshotPath });
+      }
+      
+      results.push({ state, actualStyles, diffs, pass, screenshotPath });
+      
+      // 상태 초기화
+      if (state === 'active') {
+        await page.mouse.up();
+      }
+      await page.mouse.move(0, 0);
+      
+    } catch (err) {
+      results.push({ state, error: err.message, pass: false });
+    }
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+          const scriptPath = path.join(testDir, "interactive-state-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 30000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const passed = results.filter((r: { pass: boolean }) => r.pass).length;
+          const total = results.length;
+          const successRate = total > 0 ? (passed / total) * 100 : 0;
+          
+          const resultTable = results.map((r: { state: string; pass: boolean; error?: string; diffs?: Record<string, { expected: string; actual: string }>; screenshotPath?: string }) => {
+            if (r.error) return `| ${r.state} | ❌ | ${r.error} |`;
+            const diffCount = Object.keys(r.diffs || {}).length;
+            const screenshot = r.screenshotPath ? ` 📸` : "";
+            return `| ${r.state} | ${r.pass ? "✅" : "❌"} | ${r.pass ? "일치" : `${diffCount}개 불일치`}${screenshot} |`;
+          }).join("\n");
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🖱️ **Interactive State 검증 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successRate.toFixed(1)}% (${passed}/${total}) |
+| 대상 요소 | \`${input.element.selector}\` |
+
+## 상태별 결과
+| 상태 | 결과 | 세부 |
+|------|------|------|
+${resultTable}
+
+## 수정 가이드
+- CSS :hover, :focus, :active 의사 클래스 확인
+- Tailwind: hover:, focus:, active: 접두사 사용
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ Interactive State 검증 실패: ${message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "d2c_test_responsive": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            breakpoints: z.array(z.number()).optional().default([320, 375, 768, 1024, 1440]),
+            height: z.number().optional().default(800),
+            baselineImages: z.record(z.string()).optional(),
+            selector: z.string().optional(),
+          })
+          .parse(args);
+
+        const testScript = `
+const { chromium } = require('playwright');
+const path = require('path');
+const fs = require('fs');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ deviceScaleFactor: ${DEVICE_SCALE_FACTOR} });
+  const page = await context.newPage();
+  
+  const results = [];
+  const breakpoints = ${JSON.stringify(input.breakpoints)};
+  const height = ${input.height};
+  const screenshotDir = '${SCREENSHOT_DIR}';
+  const selector = ${input.selector ? `'${input.selector}'` : 'null'};
+  
+  // 스크린샷 디렉토리 생성
+  if (!fs.existsSync(screenshotDir)) {
+    fs.mkdirSync(screenshotDir, { recursive: true });
+  }
+  
+  for (const width of breakpoints) {
+    await page.setViewportSize({ width, height });
+    await page.goto('${input.targetUrl}');
+    await page.waitForLoadState('networkidle');
+    
+    const timestamp = Date.now();
+    const screenshotPath = path.join(screenshotDir, 'responsive-' + width + '-' + timestamp + '.png');
+    
+    if (selector) {
+      const element = page.locator(selector).first();
+      if (await element.count() > 0) {
+        await element.screenshot({ path: screenshotPath });
+      } else {
+        results.push({ width, error: 'Selector not found', screenshotPath: null });
+        continue;
+      }
+    } else {
+      await page.screenshot({ path: screenshotPath, fullPage: false });
+    }
+    
+    results.push({
+      width,
+      screenshotPath,
+      viewport: { width, height },
+    });
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+          const scriptPath = path.join(testDir, "responsive-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 60000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const resultTable = results.map((r: { width: number; error?: string; screenshotPath?: string }) => {
+            if (r.error) return `| ${r.width}px | ❌ | ${r.error} |`;
+            return `| ${r.width}px | ✅ | \`${path.basename(r.screenshotPath || "")}\` |`;
+          }).join("\n");
+          
+          const screenshotPaths = results
+            .filter((r: { screenshotPath?: string }) => r.screenshotPath)
+            .map((r: { width: number; screenshotPath: string }) => `- ${r.width}px: \`${r.screenshotPath}\``)
+            .join("\n");
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 **Responsive Breakpoint 테스트 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| 테스트 브레이크포인트 | ${input.breakpoints.length}개 |
+| 대상 URL | ${input.targetUrl} |
+${input.selector ? `| 대상 선택자 | \`${input.selector}\` |` : ""}
+
+## 브레이크포인트별 결과
+| 너비 | 상태 | 스크린샷 |
+|------|------|----------|
+${resultTable}
+
+## 저장된 스크린샷
+${screenshotPaths}
+
+## 활용 가이드
+1. 각 브레이크포인트 스크린샷을 Figma와 비교
+2. 깨지는 레이아웃 발견 시 미디어 쿼리 수정
+3. \`d2c_run_visual_test\`로 baseline과 비교 가능
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ Responsive 테스트 실패: ${message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "d2c_verify_fonts": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            textElements: z.array(z.object({
+              selector: z.string(),
+              expected: z.object({
+                fontFamily: z.string().optional(),
+                fontSize: z.string().optional(),
+                fontWeight: z.string().optional(),
+                lineHeight: z.string().optional(),
+                letterSpacing: z.string().optional(),
+              }),
+            })),
+          })
+          .parse(args);
+
+        const testScript = `
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  // 폰트 로딩 대기
+  await page.evaluate(() => document.fonts.ready);
+  
+  const results = [];
+  const elements = ${JSON.stringify(input.textElements)};
+  
+  for (const elem of elements) {
+    const locator = page.locator(elem.selector).first();
+    const exists = await locator.count() > 0;
+    
+    if (!exists) {
+      results.push({ selector: elem.selector, error: 'Element not found', pass: false });
+      continue;
+    }
+    
+    const fontInfo = await locator.evaluate((el) => {
+      const style = window.getComputedStyle(el);
+      return {
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        lineHeight: style.lineHeight,
+        letterSpacing: style.letterSpacing,
+      };
+    });
+    
+    const diffs = {};
+    let pass = true;
+    
+    for (const [prop, expected] of Object.entries(elem.expected)) {
+      if (expected === undefined) continue;
+      const actual = fontInfo[prop] || '';
+      
+      // 폰트 패밀리는 첫 번째 폰트만 비교
+      let match = false;
+      if (prop === 'fontFamily') {
+        const actualFirst = actual.split(',')[0].replace(/['"]/g, '').trim().toLowerCase();
+        const expectedFirst = expected.split(',')[0].replace(/['"]/g, '').trim().toLowerCase();
+        match = actualFirst === expectedFirst;
+      } else {
+        match = actual.trim().toLowerCase() === expected.trim().toLowerCase();
+      }
+      
+      if (!match) {
+        pass = false;
+        diffs[prop] = { expected, actual };
+      }
+    }
+    
+    results.push({ selector: elem.selector, fontInfo, diffs, pass });
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          const scriptPath = path.join(testDir, "font-verify-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 30000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const passed = results.filter((r: { pass: boolean }) => r.pass).length;
+          const total = results.length;
+          const successRate = total > 0 ? (passed / total) * 100 : 0;
+          
+          const resultDetails = results.map((r: { selector: string; pass: boolean; error?: string; fontInfo?: Record<string, string>; diffs?: Record<string, { expected: string; actual: string }> }) => {
+            if (r.error) return `### \`${r.selector}\` ❌\n${r.error}\n`;
+            if (r.pass) return `### \`${r.selector}\` ✅\n폰트 설정 일치\n`;
+            
+            const diffList = Object.entries(r.diffs || {})
+              .map(([prop, v]) => `- **${prop}**: 기대 \`${v.expected}\` → 실제 \`${v.actual}\``)
+              .join("\n");
+            return `### \`${r.selector}\` ❌\n${diffList}\n`;
+          }).join("\n");
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔤 **Font Metrics 검증 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successRate.toFixed(1)}% (${passed}/${total}) |
+| 대상 URL | ${input.targetUrl} |
+
+## 상세 결과
+${resultDetails}
+
+## 수정 가이드
+- 폰트 패밀리 불일치: @font-face 또는 Google Fonts 확인
+- fontSize/lineHeight 불일치: CSS 값 직접 수정
+- 폰트 로딩 실패 시 fallback 폰트가 표시됨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ Font Metrics 검증 실패: ${message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "d2c_compare_accessibility": {
+        const input = z
+          .object({
+            targetUrl: z.string(),
+            checkItems: z.array(z.enum(["headings", "landmarks", "aria-labels", "tab-order", "images", "forms"])).optional(),
+            selector: z.string().optional(),
+          })
+          .parse(args);
+
+        const checkAll = !input.checkItems || input.checkItems.length === 0;
+        const checks = input.checkItems || ["headings", "landmarks", "aria-labels", "tab-order", "images", "forms"];
+
+        const testScript = `
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: ${VIEWPORT_WIDTH}, height: ${VIEWPORT_HEIGHT} });
+  await page.goto('${input.targetUrl}');
+  await page.waitForLoadState('networkidle');
+  
+  const results = {};
+  const checks = ${JSON.stringify(checks)};
+  const selector = ${input.selector ? `'${input.selector}'` : 'null'};
+  
+  const root = selector ? page.locator(selector).first() : page;
+  
+  // Headings 검사
+  if (checks.includes('headings')) {
+    const headings = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const hs = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      return Array.from(hs).map(h => ({
+        level: parseInt(h.tagName[1]),
+        text: h.textContent?.trim().substring(0, 50),
+      }));
+    }, selector);
+    
+    // Heading 순서 검증
+    let lastLevel = 0;
+    const issues = [];
+    for (const h of headings) {
+      if (h.level > lastLevel + 1 && lastLevel !== 0) {
+        issues.push('h' + (lastLevel) + ' → h' + h.level + ' (레벨 건너뜀)');
+      }
+      lastLevel = h.level;
+    }
+    
+    results.headings = {
+      count: headings.length,
+      structure: headings,
+      issues,
+      pass: issues.length === 0,
+    };
+  }
+  
+  // Landmarks 검사
+  if (checks.includes('landmarks')) {
+    const landmarks = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const roles = ['banner', 'navigation', 'main', 'complementary', 'contentinfo', 'search', 'form', 'region'];
+      const found = [];
+      
+      for (const role of roles) {
+        const els = container.querySelectorAll('[role="' + role + '"], ' + 
+          (role === 'banner' ? 'header' : '') +
+          (role === 'navigation' ? 'nav' : '') +
+          (role === 'main' ? 'main' : '') +
+          (role === 'complementary' ? 'aside' : '') +
+          (role === 'contentinfo' ? 'footer' : '') +
+          (role === 'search' ? '[role="search"]' : '') +
+          (role === 'form' ? 'form[aria-label], form[aria-labelledby]' : '')
+        );
+        if (els.length > 0) found.push({ role, count: els.length });
+      }
+      
+      return found;
+    }, selector);
+    
+    const hasMain = landmarks.some(l => l.role === 'main');
+    results.landmarks = {
+      found: landmarks,
+      issues: hasMain ? [] : ['main 랜드마크 없음'],
+      pass: hasMain,
+    };
+  }
+  
+  // Aria-labels 검사
+  if (checks.includes('aria-labels')) {
+    const ariaIssues = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const issues = [];
+      
+      // 버튼 검사
+      const buttons = container.querySelectorAll('button, [role="button"]');
+      buttons.forEach((btn, i) => {
+        const hasLabel = btn.textContent?.trim() || btn.getAttribute('aria-label') || btn.getAttribute('aria-labelledby');
+        if (!hasLabel) issues.push({ type: 'button', index: i, issue: 'aria-label 없음' });
+      });
+      
+      // 링크 검사
+      const links = container.querySelectorAll('a[href]');
+      links.forEach((link, i) => {
+        const hasLabel = link.textContent?.trim() || link.getAttribute('aria-label');
+        if (!hasLabel) issues.push({ type: 'link', index: i, issue: 'aria-label 없음' });
+      });
+      
+      // 아이콘 버튼 검사
+      const iconButtons = container.querySelectorAll('button:has(svg):not(:has(span)), button:has(img):not(:has(span))');
+      iconButtons.forEach((btn, i) => {
+        const hasLabel = btn.getAttribute('aria-label') || btn.getAttribute('title');
+        if (!hasLabel) issues.push({ type: 'icon-button', index: i, issue: '아이콘 버튼에 aria-label 없음' });
+      });
+      
+      return issues;
+    }, selector);
+    
+    results.ariaLabels = {
+      issues: ariaIssues,
+      pass: ariaIssues.length === 0,
+    };
+  }
+  
+  // Tab order 검사
+  if (checks.includes('tab-order')) {
+    const tabOrder = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const focusable = container.querySelectorAll(
+        'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      return Array.from(focusable).map((el, i) => ({
+        index: i,
+        tag: el.tagName.toLowerCase(),
+        tabindex: el.getAttribute('tabindex'),
+        label: el.textContent?.trim().substring(0, 30) || el.getAttribute('aria-label') || '',
+      }));
+    }, selector);
+    
+    const negativeTabindex = tabOrder.filter(t => parseInt(t.tabindex || '0') < 0);
+    results.tabOrder = {
+      count: tabOrder.length,
+      items: tabOrder.slice(0, 10),
+      issues: negativeTabindex.length > 0 ? ['tabindex=-1 요소 ' + negativeTabindex.length + '개'] : [],
+      pass: true,
+    };
+  }
+  
+  // Images 검사
+  if (checks.includes('images')) {
+    const imageIssues = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const issues = [];
+      
+      const images = container.querySelectorAll('img');
+      images.forEach((img, i) => {
+        const alt = img.getAttribute('alt');
+        if (alt === null) {
+          issues.push({ index: i, src: img.src?.substring(0, 50), issue: 'alt 속성 없음' });
+        }
+      });
+      
+      return issues;
+    }, selector);
+    
+    results.images = {
+      issues: imageIssues,
+      pass: imageIssues.length === 0,
+    };
+  }
+  
+  // Forms 검사
+  if (checks.includes('forms')) {
+    const formIssues = await page.evaluate((sel) => {
+      const container = sel ? document.querySelector(sel) : document;
+      const issues = [];
+      
+      const inputs = container.querySelectorAll('input, select, textarea');
+      inputs.forEach((input, i) => {
+        const id = input.getAttribute('id');
+        const label = id ? container.querySelector('label[for="' + id + '"]') : null;
+        const ariaLabel = input.getAttribute('aria-label') || input.getAttribute('aria-labelledby');
+        const placeholder = input.getAttribute('placeholder');
+        
+        if (!label && !ariaLabel) {
+          issues.push({ 
+            index: i, 
+            type: input.tagName.toLowerCase(), 
+            name: input.getAttribute('name'),
+            issue: 'label 없음 (placeholder만으로는 부족)' 
+          });
+        }
+      });
+      
+      return issues;
+    }, selector);
+    
+    results.forms = {
+      issues: formIssues,
+      pass: formIssues.length === 0,
+    };
+  }
+  
+  await browser.close();
+  console.log(JSON.stringify(results));
+})();
+`;
+
+        try {
+          const testDir = PLAYWRIGHT_TEST_DIR;
+          await fs.mkdir(testDir, { recursive: true });
+          const scriptPath = path.join(testDir, "accessibility-test.js");
+          await fs.writeFile(scriptPath, testScript, "utf-8");
+          
+          const { stdout } = await execAsync(`node "${scriptPath}"`, { cwd: testDir, timeout: 30000 });
+          const results = JSON.parse(stdout.trim());
+          
+          const totalChecks = Object.keys(results).length;
+          const passedChecks = Object.values(results).filter((r: unknown) => (r as { pass: boolean }).pass).length;
+          const successRate = totalChecks > 0 ? (passedChecks / totalChecks) * 100 : 0;
+          
+          let detailsText = "";
+          
+          if (results.headings) {
+            const h = results.headings;
+            detailsText += `### Headings ${h.pass ? "✅" : "❌"}\n`;
+            detailsText += `- 발견: ${h.count}개\n`;
+            if (h.issues.length > 0) detailsText += `- 이슈: ${h.issues.join(", ")}\n`;
+            detailsText += "\n";
+          }
+          
+          if (results.landmarks) {
+            const l = results.landmarks;
+            detailsText += `### Landmarks ${l.pass ? "✅" : "❌"}\n`;
+            detailsText += `- 발견: ${l.found.map((f: { role: string; count: number }) => `${f.role}(${f.count})`).join(", ") || "없음"}\n`;
+            if (l.issues.length > 0) detailsText += `- 이슈: ${l.issues.join(", ")}\n`;
+            detailsText += "\n";
+          }
+          
+          if (results.ariaLabels) {
+            const a = results.ariaLabels;
+            detailsText += `### Aria Labels ${a.pass ? "✅" : "❌"}\n`;
+            if (a.issues.length > 0) {
+              detailsText += `- 이슈 ${a.issues.length}개:\n`;
+              a.issues.slice(0, 5).forEach((issue: { type: string; issue: string }) => {
+                detailsText += `  - ${issue.type}: ${issue.issue}\n`;
+              });
+              if (a.issues.length > 5) detailsText += `  - ... 외 ${a.issues.length - 5}개\n`;
+            }
+            detailsText += "\n";
+          }
+          
+          if (results.tabOrder) {
+            const t = results.tabOrder;
+            detailsText += `### Tab Order ${t.pass ? "✅" : "⚠️"}\n`;
+            detailsText += `- 포커스 가능 요소: ${t.count}개\n`;
+            if (t.issues.length > 0) detailsText += `- 주의: ${t.issues.join(", ")}\n`;
+            detailsText += "\n";
+          }
+          
+          if (results.images) {
+            const img = results.images;
+            detailsText += `### Images ${img.pass ? "✅" : "❌"}\n`;
+            if (img.issues.length > 0) {
+              detailsText += `- alt 없는 이미지: ${img.issues.length}개\n`;
+            } else {
+              detailsText += `- 모든 이미지에 alt 속성 있음\n`;
+            }
+            detailsText += "\n";
+          }
+          
+          if (results.forms) {
+            const f = results.forms;
+            detailsText += `### Forms ${f.pass ? "✅" : "❌"}\n`;
+            if (f.issues.length > 0) {
+              detailsText += `- label 없는 입력 필드: ${f.issues.length}개\n`;
+            } else {
+              detailsText += `- 모든 입력 필드에 label 연결됨\n`;
+            }
+          }
+          
+          return {
+            content: [{
+              type: "text",
+              text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+♿ **Accessibility 검증 결과**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 요약
+| 항목 | 값 |
+|------|-----|
+| **성공률** | ${successRate.toFixed(1)}% (${passedChecks}/${totalChecks}) |
+| 대상 URL | ${input.targetUrl} |
+${input.selector ? `| 대상 선택자 | \`${input.selector}\` |` : ""}
+
+## 상세 결과
+${detailsText}
+
+## WCAG 2.1 가이드라인
+- Headings: 논리적 순서 유지 (h1 → h2 → h3)
+- Landmarks: main, nav, header, footer 역할 명시
+- Aria Labels: 모든 인터랙티브 요소에 접근 가능한 이름 제공
+- Images: 의미 있는 이미지에 alt 텍스트 필수
+- Forms: 모든 입력 필드에 연결된 label 필요
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return {
+            content: [{ type: "text", text: `❌ Accessibility 검증 실패: ${message}` }],
+            isError: true,
+          };
+        }
       }
 
       default:

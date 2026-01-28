@@ -429,6 +429,186 @@ Phase 3 결과를 표시하고 HITL 옵션을 제공합니다. (DOM + Pixel 이�
 #### `d2c_check_ai_setup`
 AI 어시스턴트 설정 상태를 확인하고 추천 설정을 제공합니다.
 
+### Playwright 고급 검증 도구
+
+pixel 비교와 DOM 비교 외에 D2C 성공률을 높이기 위한 추가 검증 도구들입니다.
+
+| 도구 | 용도 | 난이도 | 효과 | 추천 Phase |
+|------|------|--------|------|------------|
+| `d2c_compare_bounding_box` | 요소 위치/크기 비교 | 낮음 | 높음 | Phase 1 보조 |
+| `d2c_compare_styles` | CSS 속성 비교 | 중간 | 높음 | Phase 2 보조 |
+| `d2c_verify_interactive_states` | hover/focus 상태 검증 | 낮음 | 중간 | Phase 2 확장 |
+| `d2c_test_responsive` | 반응형 브레이크포인트 테스트 | 낮음 | 높음 | 전체 Phase |
+| `d2c_verify_fonts` | 폰트 설정 검증 | 낮음 | 중간 | Phase 1 보조 |
+| `d2c_compare_accessibility` | 접근성 트리 검증 | 중간 | 중간 | Phase 3 보조 |
+
+#### `d2c_compare_bounding_box`
+요소의 **Bounding Box(위치, 크기)**를 Figma 디자인 값과 비교합니다.
+
+```typescript
+{
+  targetUrl: string;        // 검증할 페이지 URL
+  elements: Array<{
+    selector: string;       // CSS 선택자
+    expected: {             // Figma에서 추출한 기대 값
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+    };
+  }>;
+  tolerance?: number;       // 허용 오차 픽셀 (기본: 2)
+}
+```
+
+**활용 시나리오**:
+- Figma 프레임 좌표와 실제 렌더링 좌표 비교
+- 요소 간 간격(gap) 수치 검증
+- 정렬(alignment) 정확도 측정
+
+---
+
+#### `d2c_compare_styles`
+요소의 **CSS Computed Style**을 Figma 디자인 값과 비교합니다.
+
+```typescript
+{
+  targetUrl: string;        // 검증할 페이지 URL
+  elements: Array<{
+    selector: string;       // CSS 선택자
+    expectedStyles: {       // 기대하는 CSS 속성들
+      fontSize?: string;    // 예: "16px"
+      color?: string;       // 예: "rgb(0, 0, 0)"
+      padding?: string;
+      margin?: string;
+      // ... 기타 CSS 속성
+    };
+  }>;
+}
+```
+
+**활용 시나리오**:
+- 픽셀 비교로 잡기 어려운 미세한 스타일 차이 감지
+- 색상, 크기, 간격 등 핵심 속성 정확도 검증
+- Figma 스타일 토큰과 실제 적용값 대조
+
+---
+
+#### `d2c_verify_interactive_states`
+요소의 **인터랙티브 상태(hover, focus, active)별 스타일**을 검증합니다.
+
+```typescript
+{
+  targetUrl: string;        // 검증할 페이지 URL
+  element: {
+    selector: string;       // CSS 선택자
+    states: Array<{
+      state: "hover" | "focus" | "active" | "disabled";
+      expectedStyles: {     // 해당 상태에서 기대하는 스타일
+        backgroundColor?: string;
+        color?: string;
+        boxShadow?: string;
+        // ...
+      };
+    }>;
+  };
+  captureScreenshots?: boolean;  // 상태별 스크린샷 캡처 (기본: false)
+}
+```
+
+**활용 시나리오**:
+- Figma variant(hover, pressed, disabled 등)와 실제 구현 비교
+- 인터랙션 피드백 누락 감지
+- CSS 의사 클래스(:hover, :focus) 동작 검증
+
+---
+
+#### `d2c_test_responsive`
+**여러 뷰포트 크기**에서 컴포넌트를 자동 테스트합니다.
+
+```typescript
+{
+  targetUrl: string;        // 테스트할 페이지 URL
+  breakpoints?: number[];   // 테스트 너비 목록 (기본: [320, 375, 768, 1024, 1440])
+  height?: number;          // 뷰포트 높이 (기본: 800)
+  baselineImages?: {        // 브레이크포인트별 baseline 이미지
+    "375"?: string;         // 예: "./baseline-375.png"
+    "768"?: string;
+  };
+  selector?: string;        // 특정 요소만 캡처할 선택자
+}
+```
+
+**활용 시나리오**:
+- 모바일(320, 375), 태블릿(768), 데스크톱(1024, 1440) 자동 테스트
+- 각 브레이크포인트별 스크린샷 이력 저장
+- 깨지는 레이아웃 조기 발견
+
+**저장 위치**: `D2C_SCREENSHOT_DIR/responsive-{width}-{timestamp}.png`
+
+---
+
+#### `d2c_verify_fonts`
+텍스트 요소의 **폰트 설정**이 Figma와 일치하는지 검증합니다.
+
+```typescript
+{
+  targetUrl: string;        // 검증할 페이지 URL
+  textElements: Array<{
+    selector: string;       // CSS 선택자
+    expected: {
+      fontFamily?: string;    // 예: "Pretendard"
+      fontSize?: string;      // 예: "16px"
+      fontWeight?: string;    // 예: "600"
+      lineHeight?: string;    // 예: "24px"
+      letterSpacing?: string; // 예: "-0.02em"
+    };
+  }>;
+}
+```
+
+**활용 시나리오**:
+- Figma 텍스트 스타일과 실제 적용 폰트 비교
+- 폰트 대체(fallback) 발생 여부 감지
+- 폰트 로딩 실패로 인한 레이아웃 차이 조기 발견
+
+---
+
+#### `d2c_compare_accessibility`
+페이지의 **접근성 트리**를 분석하고 검증합니다.
+
+```typescript
+{
+  targetUrl: string;        // 검증할 페이지 URL
+  checkItems?: Array<       // 검증 항목 (기본: 전체)
+    "headings" |            // h1~h6 구조
+    "landmarks" |           // main, nav, header 등
+    "aria-labels" |         // 버튼, 링크 접근성 이름
+    "tab-order" |           // 키보드 탐색 순서
+    "images" |              // img alt 속성
+    "forms"                 // 입력 필드 label
+  >;
+  selector?: string;        // 특정 영역만 검증
+}
+```
+
+**검증 내용**:
+| 항목 | 검증 내용 |
+|------|----------|
+| headings | h1→h2→h3 논리적 순서, 레벨 건너뛰기 감지 |
+| landmarks | main 필수, nav/header/footer 존재 확인 |
+| aria-labels | 버튼, 링크, 아이콘 버튼의 접근 가능한 이름 |
+| tab-order | 포커스 가능 요소 수, tabindex=-1 경고 |
+| images | alt 속성 누락 이미지 감지 |
+| forms | label 없는 입력 필드 감지 |
+
+**활용 시나리오**:
+- WCAG 2.1 가이드라인 준수 여부 확인
+- 스크린 리더 사용자 경험 검증
+- SEO 및 접근성 점수 향상
+
+---
+
 ### 기타 도구
 
 #### `d2c_get_design_rules`
@@ -522,6 +702,18 @@ npm run dev
 ```
 
 ## 변경 이력
+
+### v1.8.0
+- **Playwright 고급 검증 도구 6종 추가**
+  - `d2c_compare_bounding_box` - 요소 위치/크기 수치 비교
+  - `d2c_compare_styles` - CSS Computed Style 비교
+  - `d2c_verify_interactive_states` - hover/focus/active 상태 검증
+  - `d2c_test_responsive` - 반응형 브레이크포인트 자동 테스트
+  - `d2c_verify_fonts` - 폰트 메트릭 검증
+  - `d2c_compare_accessibility` - 접근성 트리 분석 및 WCAG 검증
+- **D2C 성공률 향상 지원**
+  - Phase별 보조 도구로 활용 권장
+  - 픽셀 비교 + 수치 비교 조합으로 정확도 향상
 
 ### v1.7.0
 - **자동 Phase 1 진입** 강제
